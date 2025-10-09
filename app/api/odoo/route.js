@@ -26,8 +26,8 @@ export async function POST(req) {
             "create",
             [
               {
-                name: body.name || "No name provided",
-                email: body.email || "",
+                x_name: body.name || "No name provided",
+                x_studio_email: body.email || "",
               },
             ],
           ],
