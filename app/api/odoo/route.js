@@ -5,7 +5,7 @@ export async function POST(req) {
     // --- Odoo credentials ---
     const ODOO_URL = "https://puddle-paper.odoo.com";
     const DB = "puddle-paper"; // database name (check from Odoo URL or About page)
-    const USER = "jeffromanoguevarra@gmail.com"; // your Odoo login email
+    const USER = "2"; // your Odoo login email
     const API_KEY = "c4fe251e46429be275daffb7147bda157d19aff5"; // your API key
 
     // --- Prepare the JSON-RPC request ---
