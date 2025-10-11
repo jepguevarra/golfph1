@@ -32,7 +32,8 @@ export async function POST(req) {
               name, // BD: bd_name
               email, // BD: bd_email
               phone, // BD: bd_cpnumber
-              customer_rank: 1, // marks it as a customer
+              customer: true
+
             },
           ],
         ],
