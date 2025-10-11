@@ -6,7 +6,7 @@ export async function POST(req) {
     const ODOO_URL = "https://puddle-paper.odoo.com";
     const DB = "puddle-paper"; // database name (check from Odoo URL or About page)
     const USER = "2"; // your Odoo login email
-    const API_KEY = "c4fe251e46429be275daffb7147bda157d19aff5"; // your API key
+    const API_KEY = "a6b8180478f3e13af0c42ed6087350df7bbbb7aa"; // your API key
 
     // --- Prepare the JSON-RPC request ---
     const response = await fetch(`${ODOO_URL}/jsonrpc`, {
