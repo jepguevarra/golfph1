@@ -1,63 +1,69 @@
+// /app/api/odoo/route.js  (Next.js App Router)
 
-export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "https://appsumo55348.directoryup.com/"); // or your specific domain
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+// 🔐 CORS — allow calls from your BD site
+const CORS = {
+  "Access-Control-Allow-Origin": "https://appsumo55348.directoryup.com", // or "*" while testing
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
 
-  if (req.method === "OPTIONS") {
-    res.status(200).end();
-    return;
-  }
+export async function OPTIONS() {
+  return new Response(null, { status: 200, headers: CORS });
+}
 
-  // 🟢 Your existing Odoo integration logic here this here
-  export async function POST(req) {
+export async function POST(req) {
   try {
-    const body = await req.json();
+    const body = await req.json(); // expects { name, email, phone }
 
-    // --- Odoo credentials ---
+    // --- Odoo credentials (use env vars in production) ---
     const ODOO_URL = "https://puddle-paper.odoo.com";
-    const DB = "puddle-paper"; // database name (check from Odoo URL or About page)
-    const USER = "2"; // your Odoo login email
-    const API_KEY = "a6b8180478f3e13af0c42ed6087350df7bbbb7aa"; // your API key
+    const DB = "puddle-paper";
+    // IMPORTANT: must be a numeric UID (e.g., 1), not an email or string "2"
+    const UID = 2; // ← set this to your real numeric user ID
+    const API_KEY = "a6b8180478f3e13af0c42ed6087350df7bbbb7aa";
 
-    // --- Prepare the JSON-RPC request ---
-    const response = await fetch(`${ODOO_URL}/jsonrpc`, {
+    // --- Build JSON-RPC request ---
+    const payload = {
+      jsonrpc: "2.0",
+      method: "call",
+      params: {
+        service: "object",
+        method: "execute_kw",
+        args: [
+          DB,
+          UID,              // numeric uid
+          API_KEY,          // API key (or password)
+          "res.partner",    // model
+          "create",         // method
+          [
+            {
+              name: body?.name || "No name provided",
+              email: body?.email || "",
+              phone: body?.phone || "",
+            },
+          ],
+        ],
+      },
+      id: Date.now(),
+    };
+
+    const odooRes = await fetch(`${ODOO_URL}/jsonrpc`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        method: "call",
-        params: {
-          service: "object",
-          method: "execute_kw",
-          args: [
-            DB,
-            USER, // email instead of user_id
-            API_KEY,
-            "res.partner", // your custom model
-            "create",
-            [
-              {
-                name: body.name || "No name provided",
-                email: body.email || "",
-                phone: body.phone || "",
-              },
-            ],
-          ],
-        },
-        id: new Date().getTime(),
-      }),
+      body: JSON.stringify(payload),
     });
 
-    const result = await response.json();
+    const result = await odooRes.json();
 
-    // --- Return the Odoo result ---
-    return new Response(JSON.stringify(result), { status: 200 });
+    return new Response(JSON.stringify(result), {
+      status: 200,
+      headers: { ...CORS, "Content-Type": "application/json" },
+    });
   } catch (error) {
-    console.error("Error:", error);
-    return new Response(JSON.stringify({ error: error.message }), { status: 500 });
+    console.error("Odoo route error:", error);
+    return new Response(JSON.stringify({ error: error.message }), {
+      status: 500,
+      headers: { ...CORS, "Content-Type": "application/json" },
+    });
   }
 }
-
-}
-
