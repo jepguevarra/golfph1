@@ -1,4 +1,16 @@
-export async function POST(req) {
+
+export default async function handler(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*"); // or your specific domain
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") {
+    res.status(200).end();
+    return;
+  }
+
+  // 🟢 Your existing Odoo integration logic here
+  export async function POST(req) {
   try {
     const body = await req.json();
 
@@ -46,3 +58,6 @@ export async function POST(req) {
     return new Response(JSON.stringify({ error: error.message }), { status: 500 });
   }
 }
+
+}
+
