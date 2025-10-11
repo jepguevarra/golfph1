@@ -7,7 +7,7 @@ export async function POST(req) {
     const ODOO_URL = "https://puddle-paper.odoo.com";
     const DB = "puddle-paper"; // your Odoo DB name
     const USER_ID = 2; // numeric user ID (not email)
-    const API_KEY = "c4fe251e46429be275daffb7147bda157d19aff5"; // your Odoo API key
+    const API_KEY = "9b66f474e1ab6da45443815a4ec0b32814e41ece"; // your Odoo API key
 
     // --- Prepare data from Brilliant Directories ---
     const name = body.name || "No name provided";
