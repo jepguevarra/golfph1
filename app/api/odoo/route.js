@@ -9,7 +9,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  // 🟢 Your existing Odoo integration logic here
+  // 🟢 Your existing Odoo integration logic here this here
   export async function POST(req) {
   try {
     const body = await req.json();
