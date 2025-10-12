@@ -1,7 +1,6 @@
 // /app/api/golf_rates/route.js
 
-// --- CORS ---
-const ALLOWED_ORIGIN = "https://appsumo55348.directoryup.com"; // tighten to your BD domain
+const ALLOWED_ORIGIN = "https://appsumo55348.directoryup.com";
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
   "Access-Control-Allow-Methods": "GET, OPTIONS",
@@ -12,18 +11,18 @@ const CORS_HEADERS = {
 // --- Odoo credentials ---
 const ODOO_URL = "https://puddle-paper.odoo.com";
 const DB = "puddle-paper";
-const UID = 2; // numeric user id that owns the API key
+const UID = 2;
 const API_KEY = "a6b8180478f3e13af0c42ed6087350df7bbbb7aa";
 
-// --- Technical names (from your setup) ---
+// --- Model names ---
 const PARENT_MODEL = "x_golf_course_rates";
-const LINE_MODEL   = "x_golf_course_rates_line_931dd";
-const O2M_FIELD    = "x_studio_green_fee";     // one2many on parent
-const REL_FIELD    = "x_golf_course_rates_id"; // many2one on line back to parent
+const LINE_MODEL = "x_golf_course_rates_line_931dd";
+const O2M_FIELD = "x_studio_green_fee";
+const REL_FIELD = "x_golf_course_rates_id"; // relation back to parent
 
-// --- JSON-RPC helper (supports kwargs) ---
+// --- Helper: JSON-RPC with kwargs ---
 async function callOdoo(model, method, args = [], kwargs = {}) {
-  const res = await fetch(`${ODOO_URL}/jsonrpc`, {
+  const response = await fetch(`${ODOO_URL}/jsonrpc`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -38,7 +37,7 @@ async function callOdoo(model, method, args = [], kwargs = {}) {
     }),
   });
 
-  const json = await res.json();
+  const json = await response.json();
   if (json.error) {
     const msg = (json.error.data && json.error.data.message) || json.error.message || "Unknown Odoo error";
     throw new Error(`${model}.${method} failed: ${msg}`);
@@ -46,20 +45,20 @@ async function callOdoo(model, method, args = [], kwargs = {}) {
   return json.result;
 }
 
-// --- OPTIONS (preflight) ---
+// --- OPTIONS ---
 export async function OPTIONS() {
   return new Response(null, { status: 200, headers: CORS_HEADERS });
 }
 
-// --- GET: fetch golf course rates ---
+// --- GET ---
 export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);
-    const includeAll = searchParams.get("all") === "1";              // ignore dashboard flag if ?all=1
-    const destination = searchParams.get("destination") || "";       // optional line filter
+    const includeAll = searchParams.get("all") === "1";
+    const destination = searchParams.get("destination") || "";
     const limit = Math.min(parseInt(searchParams.get("limit") || "200", 10), 1000);
 
-    // 1) Parents: optionally filter by show_to_dashboard (unset while testing with ?all=1)
+    // 1️⃣ Fetch parent records (optionally filtered)
     const parentDomain = includeAll ? [] : [["x_studio_show_to_dashboard", "=", true]];
 
     const parents = await callOdoo(
@@ -69,31 +68,27 @@ export async function GET(request) {
       { fields: ["id", "display_name", O2M_FIELD], limit }
     );
 
-    if (!parents || parents.length === 0) {
-      return new Response(JSON.stringify({
-        parents_count: 0,
-        lines_count: 0,
-        parents: [],
-        lines: [],
-        note: includeAll
-          ? `No records found in ${PARENT_MODEL}.`
-          : `No records with x_studio_show_to_dashboard = true. Try adding ?all=1 to ignore the flag.`,
-      }), { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });
+    if (!parents.length) {
+      return new Response(
+        JSON.stringify({ parents: [], lines: [], note: "No parent records found" }),
+        { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+      );
     }
 
-    // Prefer O2M IDs if present (some Studio setups return them), else fallback to relation domain
-    const o2mIds = parents.flatMap(p => Array.isArray(p[O2M_FIELD]) ? p[O2M_FIELD] : []);
-    const parentIds = parents.map(p => p.id);
+    // 2️⃣ Determine which line records to load
+    const parentIds = parents.map((p) => p.id);
+    const o2mIds = parents.flatMap((p) => Array.isArray(p[O2M_FIELD]) ? p[O2M_FIELD] : []);
 
     let lineDomain = o2mIds.length
       ? [["id", "in", o2mIds]]
       : [[REL_FIELD, "in", parentIds]];
 
+    // If user passes a destination, apply it to related field
     if (destination) {
-      lineDomain.push(["x_studio_destination", "ilike", destination]);
+      lineDomain.push(["x_studio_golf_course.x_studio_destination", "ilike", destination]);
     }
 
-    // 2) Lines: use correct relation field back to parent
+    // 3️⃣ Fetch lines with dot-notation field
     const lines = await callOdoo(
       LINE_MODEL,
       "search_read",
@@ -104,7 +99,6 @@ export async function GET(request) {
           "x_studio_acr_we",
           "x_studio_caddy",
           "x_studio_consumables",
-          "x_studio_destination",
           "x_studio_foreign_wd",
           "x_studio_foreign_we",
           "x_studio_golf_cart",
@@ -114,22 +108,29 @@ export async function GET(request) {
           "x_studio_notes",
           "x_studio_prepayment",
           "x_studio_promotion",
-          REL_FIELD, // returns [parent_id, parent_name]
+          "x_studio_golf_course", // Many2one (id, name)
+          "x_studio_golf_course.x_studio_destination", // related field
+          REL_FIELD,
         ],
         limit,
       }
     );
 
-    return new Response(JSON.stringify({
+    // 4️⃣ Return combined payload
+    const responsePayload = {
       parents_count: parents.length,
       lines_count: lines.length,
       parents,
       lines,
-    }), { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });
+    };
 
+    return new Response(JSON.stringify(responsePayload), {
+      status: 200,
+      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+    });
   } catch (err) {
-    console.error("golf_rates error:", err);
-    return new Response(JSON.stringify({ error: String(err.message || err) }), {
+    console.error("Golf Rates API Error:", err);
+    return new Response(JSON.stringify({ error: String(err.message) }), {
       status: 500,
       headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
     });
