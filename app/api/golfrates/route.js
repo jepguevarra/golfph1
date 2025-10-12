@@ -15,15 +15,14 @@ const DB = "puddle-paper";
 const UID = 2; // numeric user ID
 const API_KEY = "a6b8180478f3e13af0c42ed6087350df7bbbb7aa";
 
-// --- Model Names ---
+// --- Models & Fields ---
 const PARENT_MODEL = "x_golf_course_rates";
 const LINE_MODEL = "x_golf_course_rates_line_931dd";
-const COURSE_MODEL = "x_golf_course"; // confirmed model for courses
+const COURSE_MODEL = "x_golf_course"; // confirmed course model
 
-// --- Relationship Fields ---
-const REL_FIELD = "x_golf_course_rates_id"; // Many2one on line to parent
-const COURSE_FIELD = "x_studio_golf_course"; // Many2one on line to course
-const DESTINATION_FIELD = "x_studio_destination"; // field from x_golf_course
+const REL_FIELD = "x_golf_course_rates_id"; // line -> parent m2o
+const COURSE_FIELD = "x_studio_golf_course"; // line -> course m2o
+const DESTINATION_FIELD = "x_studio_destination"; // on x_golf_course
 
 // --- JSON-RPC Helper ---
 async function callOdoo(model, method, args = [], kwargs = {}) {
@@ -59,11 +58,11 @@ export async function OPTIONS() {
 export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);
-    const includeAll = searchParams.get("all") === "1"; // ?all=1 to ignore dashboard filter
+    const includeAll = searchParams.get("all") === "1"; // ?all=1 ignore dashboard flag
     const destinationFilter = searchParams.get("destination") || "";
     const limit = Math.min(parseInt(searchParams.get("limit") || "500", 10), 1000);
 
-    // 1️⃣ Fetch parent rate sheets
+    // 1) Parents (optionally filtered)
     const parentDomain = includeAll ? [] : [["x_studio_show_to_dashboard", "=", true]];
     const parents = await callOdoo(
       PARENT_MODEL,
@@ -86,19 +85,19 @@ export async function GET(request) {
 
     const parentIds = parents.map(p => p.id);
 
-    // 2️⃣ Fetch rate lines linked to those parents
+    // 2) Lines: include prepayment (boolean) & consumables
     const lines = await callOdoo(
       LINE_MODEL,
       "search_read",
-      [[["x_golf_course_rates_id", "in", parentIds]]],
+      [[ [REL_FIELD, "in", parentIds] ]],
       {
         fields: [
           "id",
-          COURSE_FIELD,
+          COURSE_FIELD,                // [id, name]
           "x_studio_acr_wd",
           "x_studio_acr_we",
           "x_studio_caddy",
-          "x_studio_consumables",
+          "x_studio_consumables",      // <-- included
           "x_studio_foreign_wd",
           "x_studio_foreign_we",
           "x_studio_golf_cart",
@@ -106,7 +105,7 @@ export async function GET(request) {
           "x_studio_local_wd",
           "x_studio_local_we",
           "x_studio_notes",
-          "x_studio_prepayment",
+          "x_studio_prepayment",       // <-- included (boolean)
           "x_studio_promotion",
           REL_FIELD,
         ],
@@ -126,7 +125,7 @@ export async function GET(request) {
       });
     }
 
-    // 3️⃣ Fetch related Golf Course records for destinations
+    // 3) Fetch course destinations
     const courseIds = Array.from(new Set(
       lines
         .map(l => Array.isArray(l[COURSE_FIELD]) ? l[COURSE_FIELD][0] : null)
@@ -144,16 +143,18 @@ export async function GET(request) {
 
     const courseMap = Object.fromEntries(courses.map(c => [c.id, c]));
 
-    // 4️⃣ Combine data — attach course info to lines
-    const enrichedLines = lines.map(l => {
-      const courseData = Array.isArray(l[COURSE_FIELD])
-        ? courseMap[l[COURSE_FIELD][0]] || {}
-        : {};
+    // 4) Enrich
+    const enriched = lines.map(l => {
+      const courseM2O = l[COURSE_FIELD];
+      const courseId = Array.isArray(courseM2O) ? courseM2O[0] : null;
+      const courseName = Array.isArray(courseM2O) ? courseM2O[1] : "";
+      const courseInfo = (courseId && courseMap[courseId]) || {};
+      const destination = courseInfo[DESTINATION_FIELD] || "";
 
       return {
         id: l.id,
-        golf_course_name: l[COURSE_FIELD]?.[1] || "",
-        destination: courseData[DESTINATION_FIELD] || "",
+        golf_course_name: courseName,
+        destination,
         acr_wd: l.x_studio_acr_wd,
         acr_we: l.x_studio_acr_we,
         local_wd: l.x_studio_local_wd,
@@ -162,24 +163,21 @@ export async function GET(request) {
         foreign_we: l.x_studio_foreign_we,
         caddy: l.x_studio_caddy,
         golf_cart: l.x_studio_golf_cart,
-        consumables: l.x_studio_consumables,
         insurance: l.x_studio_insurance,
+        consumables: l.x_studio_consumables, // <-- included
+        prepayment: !!l.x_studio_prepayment, // <-- included (boolean)
         notes: l.x_studio_notes,
-        prepayment: l.x_studio_prepayment,
         promotion: l.x_studio_promotion,
       };
     });
 
-    // 5️⃣ Optional filter by destination name
+    // 5) Optional destination filter (client-side)
     const filtered = destinationFilter
-      ? enrichedLines.filter(x =>
-          (x.destination || "")
-            .toLowerCase()
-            .includes(destinationFilter.toLowerCase())
+      ? enriched.filter(x =>
+          (x.destination || "").toLowerCase().includes(destinationFilter.toLowerCase())
         )
-      : enrichedLines;
+      : enriched;
 
-    // ✅ Final Response
     return new Response(JSON.stringify({
       parents_count: parents.length,
       lines_count: filtered.length,
