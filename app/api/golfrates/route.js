@@ -30,6 +30,7 @@ async function callOdoo(method, model, args = []) {
       id: Date.now(),
     }),
   });
+
   const data = await response.json();
   return data.result;
 }
@@ -39,12 +40,12 @@ export async function OPTIONS() {
   return new Response(null, { status: 200, headers: CORS_HEADERS });
 }
 
-// --- GET Request to fetch visible golf rates ---
+// --- GET Request to fetch all golf rates ---
 export async function GET() {
   try {
-    // Step 1: Find all parent golf rate records where show_to_dashboard = true
+    // Step 1: Fetch all parent golf rate records (no dashboard filter)
     const visibleParents = await callOdoo("search_read", "x_golf_course_rates", [
-      [["x_studio_show_to_dashboard", "=", true]],
+      [], // 👈 No filter — fetch all records
       { fields: ["id", "x_name"], limit: 50 },
     ]);
 
