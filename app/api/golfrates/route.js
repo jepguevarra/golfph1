@@ -4,7 +4,7 @@
 const ALLOWED_ORIGIN = "https://appsumo55348.directoryup.com";
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
   "Access-Control-Max-Age": "86400",
 };
@@ -15,15 +15,16 @@ const DB = "puddle-paper";
 const UID = 2; // numeric user ID
 const API_KEY = "a6b8180478f3e13af0c42ed6087350df7bbbb7aa";
 
-// --- Models & Fields ---
+// --- Models ---
 const PARENT_MODEL = "x_golf_course_rates";
 const LINE_MODEL = "x_golf_course_rates_line_931dd";
 const COURSE_MODEL = "x_golf_course";
 const PARTNER_MODEL = "res.partner";
+const TEE_MODEL = "x_tee_time_appointment";
 
-const REL_FIELD = "x_golf_course_rates_id";       // line -> parent m2o
-const COURSE_FIELD = "x_studio_golf_course";      // line -> course m2o
-const DESTINATION_FIELD = "x_studio_destination"; // on x_golf_course
+const REL_FIELD = "x_golf_course_rates_id";
+const COURSE_FIELD = "x_studio_golf_course";
+const DESTINATION_FIELD = "x_studio_destination";
 
 // --- JSON-RPC Helper ---
 async function callOdoo(model, method, args = [], kwargs = {}) {
@@ -50,40 +51,44 @@ async function callOdoo(model, method, args = [], kwargs = {}) {
   return json.result;
 }
 
-// --- OPTIONS (CORS Preflight) ---
+// --- OPTIONS ---
 export async function OPTIONS() {
   return new Response(null, { status: 200, headers: CORS_HEADERS });
 }
 
-// --- GET Request ---
+// --- GET (member lookup + rates) ---
 export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);
-
-    // ✅ Member lookup branch: /api/golf_rates?member_email=...
     const memberEmail = (searchParams.get("member_email") || "").trim();
+
+    // Member lookup
     if (memberEmail) {
-      // case-insensitive email lookup (limit 1)
       const partners = await callOdoo(
         PARTNER_MODEL,
         "search_read",
         [[["email", "ilike", memberEmail]]],
-        { fields: ["id", "name", "email", "x_studio_free_buddy_passes", "x_studio_golf_ph_priveledge_card_no"], limit: 1 }
+        {
+          fields: [
+            "id",
+            "name",
+            "email",
+            "x_studio_free_buddy_passes",
+            "x_studio_golf_ph_priveledge_card_no",
+          ],
+          limit: 1,
+        }
       );
-
-      const data = partners?.[0] || null;
-      return new Response(JSON.stringify({ member: data }), {
+      return new Response(JSON.stringify({ member: partners?.[0] || null }), {
         status: 200,
         headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
       });
     }
 
-    // ✅ Rates branch (your existing logic)
-    const includeAll = searchParams.get("all") === "1"; // ?all=1 ignore dashboard flag
-    const destinationFilter = searchParams.get("destination") || "";
+    // Rates fetch
+    const includeAll = searchParams.get("all") === "1";
     const limit = Math.min(parseInt(searchParams.get("limit") || "500", 10), 1000);
 
-    // 1) Parents
     const parentDomain = includeAll ? [] : [["x_studio_show_to_dashboard", "=", true]];
     const parents = await callOdoo(
       PARENT_MODEL,
@@ -92,96 +97,63 @@ export async function GET(request) {
       { fields: ["id", "x_name"], limit }
     );
 
-    if (!parents.length) {
-      return new Response(JSON.stringify({
-        message: "No parent records found.",
-        parents: [],
-        lines: [],
-        count: 0,
-      }), {
-        status: 200,
-        headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
-      });
-    }
+    if (!parents.length)
+      return new Response(JSON.stringify({ lines: [] }), { status: 200, headers: CORS_HEADERS });
 
     const parentIds = parents.map(p => p.id);
-
-    // 2) Lines (+prepayment, +consumables)
     const lines = await callOdoo(
       LINE_MODEL,
       "search_read",
-      [[ [REL_FIELD, "in", parentIds] ]],
+      [[[REL_FIELD, "in", parentIds]]],
       {
         fields: [
           "id",
-          COURSE_FIELD,                // [id, name]
+          COURSE_FIELD,
+          "x_studio_local_wd",
+          "x_studio_local_we",
+          "x_studio_foreign_wd",
+          "x_studio_foreign_we",
           "x_studio_acr_wd",
           "x_studio_acr_we",
           "x_studio_caddy",
-          "x_studio_consumables",
-          "x_studio_foreign_wd",
-          "x_studio_foreign_we",
           "x_studio_golf_cart",
           "x_studio_insurance",
-          "x_studio_local_wd",
-          "x_studio_local_we",
+          "x_studio_consumables",
+          "x_studio_prepayment",
           "x_studio_notes",
-          "x_studio_prepayment",       // boolean
           "x_studio_promotion",
-          REL_FIELD,
         ],
         limit,
       }
     );
 
-    if (!lines.length) {
-      return new Response(JSON.stringify({
-        message: "No rate lines found.",
-        parents,
-        lines: [],
-        count: 0,
-      }), {
-        status: 200,
-        headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
-      });
-    }
-
-    // 3) Course destinations
     const courseIds = Array.from(new Set(
       lines
         .map(l => Array.isArray(l[COURSE_FIELD]) ? l[COURSE_FIELD][0] : null)
         .filter(Boolean)
     ));
 
-    const courses = courseIds.length
-      ? await callOdoo(
-          COURSE_MODEL,
-          "search_read",
-          [[["id", "in", courseIds]]],
-          { fields: ["id", "x_name", DESTINATION_FIELD] }
-        )
-      : [];
+    const courses = await callOdoo(
+      COURSE_MODEL,
+      "search_read",
+      [[["id", "in", courseIds]]],
+      { fields: ["id", "x_name", DESTINATION_FIELD] }
+    );
 
     const courseMap = Object.fromEntries(courses.map(c => [c.id, c]));
-
-    // 4) Enrich lines
     const enriched = lines.map(l => {
-      const courseM2O = l[COURSE_FIELD];
-      const courseId = Array.isArray(courseM2O) ? courseM2O[0] : null;
-      const courseName = Array.isArray(courseM2O) ? courseM2O[1] : "";
-      const courseInfo = (courseId && courseMap[courseId]) || {};
-      const destination = courseInfo[DESTINATION_FIELD] || "";
-
+      const courseId = Array.isArray(l[COURSE_FIELD]) ? l[COURSE_FIELD][0] : null;
+      const courseName = Array.isArray(l[COURSE_FIELD]) ? l[COURSE_FIELD][1] : "";
+      const courseInfo = courseMap[courseId] || {};
       return {
-        id: l.id,
         golf_course_name: courseName,
-        destination,
-        acr_wd: l.x_studio_acr_wd,
-        acr_we: l.x_studio_acr_we,
+        destination: courseInfo[DESTINATION_FIELD] || "",
         local_wd: l.x_studio_local_wd,
         local_we: l.x_studio_local_we,
         foreign_wd: l.x_studio_foreign_wd,
         foreign_we: l.x_studio_foreign_we,
+        acr_wd: l.x_studio_acr_wd,
+        acr_we: l.x_studio_acr_we,
         caddy: l.x_studio_caddy,
         golf_cart: l.x_studio_golf_cart,
         insurance: l.x_studio_insurance,
@@ -192,27 +164,75 @@ export async function GET(request) {
       };
     });
 
-    // 5) Optional destination filter (client-side)
-    const filtered = destinationFilter
-      ? enriched.filter(x =>
-          (x.destination || "").toLowerCase().includes(destinationFilter.toLowerCase())
-        )
-      : enriched;
+    return new Response(JSON.stringify({ lines: enriched }), {
+      status: 200,
+      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+    });
+  } catch (err) {
+    console.error("GET error:", err);
+    return new Response(JSON.stringify({ error: err.message }), {
+      status: 500,
+      headers: CORS_HEADERS,
+    });
+  }
+}
+
+// --- POST (Create Tee Time record) ---
+export async function POST(request) {
+  try {
+    const body = await request.json();
+    const {
+      golf_course,
+      date,
+      time,
+      email,
+      players,
+      used_buddy_pass,
+    } = body;
+
+    // Find member by email
+    const partners = await callOdoo(
+      PARTNER_MODEL,
+      "search_read",
+      [[["email", "=", email]]],
+      { fields: ["id", "x_studio_free_buddy_passes"], limit: 1 }
+    );
+    const member = partners?.[0];
+    if (!member) throw new Error("Member not found in Odoo.");
+
+    const memberId = member.id;
+
+    // Create tee time record
+    const tee_id = await callOdoo(
+      TEE_MODEL,
+      "create",
+      [[{
+        x_studio_golf_course: golf_course,
+        x_studio_member: memberId,
+        x_studio_date: date,
+        x_studio_time: time,
+        x_studio_players: players.join(", "),
+        x_studio_used_buddy_pass: used_buddy_pass,
+      }]]
+    );
+
+    // Update remaining passes
+    const remaining = (member.x_studio_free_buddy_passes || 0) - used_buddy_pass;
+    await callOdoo(PARTNER_MODEL, "write", [[memberId], { x_studio_free_buddy_passes: Math.max(0, remaining) }]);
 
     return new Response(JSON.stringify({
-      parents_count: parents.length,
-      lines_count: filtered.length,
-      parents,
-      lines: filtered,
+      success: true,
+      tee_id,
+      remaining_passes: Math.max(0, remaining),
     }), {
       status: 200,
       headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
     });
   } catch (err) {
-    console.error("Golf Rates API error:", err);
-    return new Response(JSON.stringify({ error: String(err.message || err) }), {
+    console.error("POST error:", err);
+    return new Response(JSON.stringify({ error: err.message }), {
       status: 500,
-      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+      headers: CORS_HEADERS,
     });
   }
 }
