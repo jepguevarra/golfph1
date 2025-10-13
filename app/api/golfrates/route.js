@@ -68,7 +68,7 @@ export async function GET(request) {
         PARTNER_MODEL,
         "search_read",
         [[["email", "ilike", memberEmail]]],
-        { fields: ["id", "name", "email", "x_studio_free_buddy_passes"], limit: 1 }
+        { fields: ["id", "name", "email", "x_studio_free_buddy_passes", "x_studio_golf_ph_priveledge_card_no"], limit: 1 }
       );
 
       const data = partners?.[0] || null;
