@@ -8,7 +8,6 @@ const CORS_HEADERS = {
   "Access-Control-Max-Age": "86400",
 };
 
-// Odoo setup
 const ODOO_URL = "https://puddle-paper.odoo.com";
 const DB = "puddle-paper";
 const UID = 2;
@@ -43,46 +42,81 @@ export async function OPTIONS() {
   return new Response(null, { status: 200, headers: CORS_HEADERS });
 }
 
-// GET (member lookup or golf rates)
+// GET: member lookup (by email) or golf rates list
 export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);
     const memberEmail = searchParams.get("member_email");
+
+    // Member lookup branch
     if (memberEmail) {
-      const partner = await callOdoo("res.partner", "search_read", [
-        [["email", "=", memberEmail]],
-      ], {
-        fields: ["id", "name", "x_studio_free_buddy_passes", "x_studio_golf_ph_priveledge_card_no"],
-        limit: 1,
-      });
+      const partner = await callOdoo(
+        MODEL_PARTNER,
+        "search_read",
+        [[["email", "=", memberEmail]]],
+        {
+          fields: [
+            "id",
+            "name",
+            "x_studio_free_buddy_passes",
+            "x_studio_golf_ph_priveledge_card_no",
+          ],
+          limit: 1,
+        }
+      );
       return new Response(JSON.stringify({ member: partner[0] || null }), {
         status: 200,
         headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
       });
     }
 
-    const rates = await callOdoo(MODEL_GOLF_RATES, "search_read", [[]], {
-      fields: [
-        "id", "x_studio_golf_course", "x_studio_local_wd", "x_studio_local_we",
-        "x_studio_foreign_wd", "x_studio_foreign_we", "x_studio_acr_wd",
-        "x_studio_acr_we", "x_studio_caddy", "x_studio_golf_cart", "x_studio_insurance",
-        "x_studio_consumables", "x_studio_prepayment", "x_studio_notes", "x_studio_promotion"
-      ],
-      limit: 1000,
-    });
+    // Golf rates branch
+    const rates = await callOdoo(
+      MODEL_GOLF_RATES,
+      "search_read",
+      [[]],
+      {
+        fields: [
+          "id",
+          "x_studio_golf_course",
+          "x_studio_local_wd",
+          "x_studio_local_we",
+          "x_studio_foreign_wd",
+          "x_studio_foreign_we",
+          "x_studio_acr_wd",
+          "x_studio_acr_we",
+          "x_studio_caddy",
+          "x_studio_golf_cart",
+          "x_studio_insurance",
+          "x_studio_consumables",
+          "x_studio_prepayment",
+          "x_studio_notes",
+          "x_studio_promotion",
+        ],
+        limit: 1000,
+      }
+    );
 
-    const courseIds = [...new Set(rates.map(r => r.x_studio_golf_course?.[0]))];
-    const courses = await callOdoo(MODEL_GOLF_COURSE, "search_read", [[["id", "in", courseIds]]], {
-      fields: ["id", "x_name", "x_studio_destination"],
-    });
+    const courseIds = [...new Set(rates.map(r => r.x_studio_golf_course?.[0]).filter(Boolean))];
+    const courses = courseIds.length
+      ? await callOdoo(
+          MODEL_GOLF_COURSE,
+          "search_read",
+          [[["id", "in", courseIds]]],
+          { fields: ["id", "x_name", "x_studio_destination"] }
+        )
+      : [];
 
     const courseMap = Object.fromEntries(courses.map(c => [c.id, c]));
+
     const lines = rates.map(r => {
-      const course = courseMap[r.x_studio_golf_course?.[0]];
+      const cid = r.x_studio_golf_course?.[0];
+      const cname = r.x_studio_golf_course?.[1];
+      const course = cid ? courseMap[cid] : null;
       return {
         id: r.id,
-        golf_course_id: r.x_studio_golf_course?.[0],
-        golf_course_name: r.x_studio_golf_course?.[1],
+        golf_course_id: cid,
+        golf_course_name: cname,
         destination: course?.x_studio_destination || "",
         local_wd: r.x_studio_local_wd,
         local_we: r.x_studio_local_we,
@@ -112,36 +146,49 @@ export async function GET(request) {
   }
 }
 
-// POST: create tee booking
+// POST: create tee time (NO buddy pass deduction here)
 export async function POST(request) {
   try {
     const body = await request.json();
     const { golf_course_id, email, date, time, players } = body;
-    if (!golf_course_id || !email || !date || !time) throw new Error("Missing fields");
 
-    const member = (await callOdoo("res.partner", "search_read", [[["email", "=", email]]], {
-      fields: ["id", "x_studio_free_buddy_passes"],
-      limit: 1,
-    }))[0];
-    if (!member) throw new Error("Member not found");
+    if (!golf_course_id || !email || !date || !time || !Array.isArray(players) || !players.length) {
+      throw new Error("Missing required fields.");
+    }
 
-    const used = Math.max(0, players.length - 1);
-    const remaining = Math.max(0, (member.x_studio_free_buddy_passes || 0) - used);
+    // Find member by email (to link the record)
+    const partner = (await callOdoo(
+      MODEL_PARTNER,
+      "search_read",
+      [[["email", "=", email]]],
+      { fields: ["id", "x_studio_free_buddy_passes"], limit: 1 }
+    ))?.[0];
+    if (!partner) throw new Error("Member not found.");
 
-    const teeId = await callOdoo(MODEL_TEE, "create", [[{
-      x_studio_golf_course: golf_course_id,
-      x_studio_member: member.id,
-      x_studio_date: date,
-      x_studio_time: time,
-      x_studio_players: players.join(", "),
-      x_studio_used_buddy_pass: used,
-    }]]);
+    // Compute used buddy passes (preview only; DO NOT write to Odoo here)
+    const usedBuddyPass = Math.max(0, players.length - 1);
 
-    await callOdoo("res.partner", "write", [[member.id], {
-      x_studio_free_buddy_passes: remaining,
-    }]);
+    // Create tee time record
+    const teeId = await callOdoo(
+      MODEL_TEE,
+      "create",
+      [[{
+        x_studio_golf_course: golf_course_id,
+        x_studio_member: partner.id,
+        x_studio_date: date,
+        x_studio_time: time,
+        x_studio_players: players.join(", "),
+        x_studio_used_buddy_pass: usedBuddyPass,
+      }]]
+    );
 
-    return new Response(JSON.stringify({ success: true, tee_id: teeId, remaining }), {
+    // Return success (no deduction to partner passes)
+    return new Response(JSON.stringify({
+      success: true,
+      tee_id: teeId,
+      // Provide client a preview-only number they can show
+      preview_used_buddy_pass: usedBuddyPass
+    }), {
       status: 200,
       headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
     });
