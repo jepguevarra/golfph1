@@ -48,7 +48,6 @@ export async function GET(request) {
     const { searchParams } = new URL(request.url);
     const memberEmail = searchParams.get("member_email");
 
-    // Member lookup branch
     if (memberEmail) {
       const partner = await callOdoo(
         MODEL_PARTNER,
@@ -60,6 +59,7 @@ export async function GET(request) {
             "name",
             "x_studio_free_buddy_passes",
             "x_studio_golf_ph_priveledge_card_no",
+            "x_studio_date_expiry", // <- NEW
           ],
           limit: 1,
         }
@@ -70,7 +70,6 @@ export async function GET(request) {
       });
     }
 
-    // Golf rates branch
     const rates = await callOdoo(
       MODEL_GOLF_RATES,
       "search_read",
@@ -156,7 +155,6 @@ export async function POST(request) {
       throw new Error("Missing required fields.");
     }
 
-    // Find member by email (to link the record)
     const partner = (await callOdoo(
       MODEL_PARTNER,
       "search_read",
@@ -165,10 +163,9 @@ export async function POST(request) {
     ))?.[0];
     if (!partner) throw new Error("Member not found.");
 
-    // Compute used buddy passes (preview only; DO NOT write to Odoo here)
+    // Used passes (preview-only, do not write in POST)
     const usedBuddyPass = Math.max(0, players.length - 1);
 
-    // Create tee time record
     const teeId = await callOdoo(
       MODEL_TEE,
       "create",
@@ -182,11 +179,9 @@ export async function POST(request) {
       }]]
     );
 
-    // Return success (no deduction to partner passes)
     return new Response(JSON.stringify({
       success: true,
       tee_id: teeId,
-      // Provide client a preview-only number they can show
       preview_used_buddy_pass: usedBuddyPass
     }), {
       status: 200,
