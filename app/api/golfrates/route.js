@@ -1,7 +1,7 @@
 // /app/api/golf_rates/route.js
 
 // --- CORS Setup ---
-const ALLOWED_ORIGIN = "https://appsumo55348.directoryup.com"; // your BD site
+const ALLOWED_ORIGIN = "https://appsumo55348.directoryup.com";
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
   "Access-Control-Allow-Methods": "GET, OPTIONS",
@@ -18,10 +18,11 @@ const API_KEY = "a6b8180478f3e13af0c42ed6087350df7bbbb7aa";
 // --- Models & Fields ---
 const PARENT_MODEL = "x_golf_course_rates";
 const LINE_MODEL = "x_golf_course_rates_line_931dd";
-const COURSE_MODEL = "x_golf_course"; // confirmed course model
+const COURSE_MODEL = "x_golf_course";
+const PARTNER_MODEL = "res.partner";
 
-const REL_FIELD = "x_golf_course_rates_id"; // line -> parent m2o
-const COURSE_FIELD = "x_studio_golf_course"; // line -> course m2o
+const REL_FIELD = "x_golf_course_rates_id";       // line -> parent m2o
+const COURSE_FIELD = "x_studio_golf_course";      // line -> course m2o
 const DESTINATION_FIELD = "x_studio_destination"; // on x_golf_course
 
 // --- JSON-RPC Helper ---
@@ -58,11 +59,31 @@ export async function OPTIONS() {
 export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);
+
+    // ✅ Member lookup branch: /api/golf_rates?member_email=...
+    const memberEmail = (searchParams.get("member_email") || "").trim();
+    if (memberEmail) {
+      // case-insensitive email lookup (limit 1)
+      const partners = await callOdoo(
+        PARTNER_MODEL,
+        "search_read",
+        [[["email", "ilike", memberEmail]]],
+        { fields: ["id", "name", "email", "x_studio_free_buddy_passes"], limit: 1 }
+      );
+
+      const data = partners?.[0] || null;
+      return new Response(JSON.stringify({ member: data }), {
+        status: 200,
+        headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+      });
+    }
+
+    // ✅ Rates branch (your existing logic)
     const includeAll = searchParams.get("all") === "1"; // ?all=1 ignore dashboard flag
     const destinationFilter = searchParams.get("destination") || "";
     const limit = Math.min(parseInt(searchParams.get("limit") || "500", 10), 1000);
 
-    // 1) Parents (optionally filtered)
+    // 1) Parents
     const parentDomain = includeAll ? [] : [["x_studio_show_to_dashboard", "=", true]];
     const parents = await callOdoo(
       PARENT_MODEL,
@@ -85,7 +106,7 @@ export async function GET(request) {
 
     const parentIds = parents.map(p => p.id);
 
-    // 2) Lines: include prepayment (boolean) & consumables
+    // 2) Lines (+prepayment, +consumables)
     const lines = await callOdoo(
       LINE_MODEL,
       "search_read",
@@ -97,7 +118,7 @@ export async function GET(request) {
           "x_studio_acr_wd",
           "x_studio_acr_we",
           "x_studio_caddy",
-          "x_studio_consumables",      // <-- included
+          "x_studio_consumables",
           "x_studio_foreign_wd",
           "x_studio_foreign_we",
           "x_studio_golf_cart",
@@ -105,7 +126,7 @@ export async function GET(request) {
           "x_studio_local_wd",
           "x_studio_local_we",
           "x_studio_notes",
-          "x_studio_prepayment",       // <-- included (boolean)
+          "x_studio_prepayment",       // boolean
           "x_studio_promotion",
           REL_FIELD,
         ],
@@ -125,7 +146,7 @@ export async function GET(request) {
       });
     }
 
-    // 3) Fetch course destinations
+    // 3) Course destinations
     const courseIds = Array.from(new Set(
       lines
         .map(l => Array.isArray(l[COURSE_FIELD]) ? l[COURSE_FIELD][0] : null)
@@ -143,7 +164,7 @@ export async function GET(request) {
 
     const courseMap = Object.fromEntries(courses.map(c => [c.id, c]));
 
-    // 4) Enrich
+    // 4) Enrich lines
     const enriched = lines.map(l => {
       const courseM2O = l[COURSE_FIELD];
       const courseId = Array.isArray(courseM2O) ? courseM2O[0] : null;
@@ -164,8 +185,8 @@ export async function GET(request) {
         caddy: l.x_studio_caddy,
         golf_cart: l.x_studio_golf_cart,
         insurance: l.x_studio_insurance,
-        consumables: l.x_studio_consumables, // <-- included
-        prepayment: !!l.x_studio_prepayment, // <-- included (boolean)
+        consumables: l.x_studio_consumables,
+        prepayment: !!l.x_studio_prepayment,
         notes: l.x_studio_notes,
         promotion: l.x_studio_promotion,
       };
