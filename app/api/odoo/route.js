@@ -23,7 +23,7 @@ export async function POST(req) {
     const address = (body?.address || "").trim();
     const dateJoined = (body?.date_today || "").trim();
     const dateExpiry = (body?.date_next_year || "").trim();
-    const subscriptionId = Number(body?.subscription_id ?? 2);
+    const subscriptionId = Number(body?.subscription_id ?? 4);
 
     if (!name && !email && !phone) {
       return new Response(
