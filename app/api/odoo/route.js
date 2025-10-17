@@ -1,8 +1,7 @@
 // /app/api/odoo/route.js
-// Compatible with Odoo custom fields: x_studio_date_joined, x_studio_date_expiry, x_studio_subscription_plan
 
 const CORS = {
-  "Access-Control-Allow-Origin": "https://appsumo55348.directoryup.com", // or "*" during testing
+  "Access-Control-Allow-Origin": "https://appsumo55348.directoryup.com",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
@@ -15,8 +14,7 @@ export async function POST(req) {
   try {
     const body = await req.json();
 
-    // ✅ Expected payload from BD script:
-    // { name, email, phone, address, date_today, date_next_year, subscription_id }
+    // existing fields
     const name = (body?.name || "").trim();
     const email = (body?.email || "").trim();
     const phone = (body?.phone || "").trim();
@@ -25,6 +23,9 @@ export async function POST(req) {
     const dateExpiry = (body?.date_next_year || "").trim();
     const subscriptionId = Number(body?.subscription_id ?? 4);
 
+    // 👉 NEW: BD member id
+    const bdMemberId = (body?.bd_member_id ?? "").toString().trim();
+
     if (!name && !email && !phone) {
       return new Response(
         JSON.stringify({ error: "Missing required data (name/email/phone)" }),
@@ -32,24 +33,25 @@ export async function POST(req) {
       );
     }
 
-    // --- 🔐 Odoo credentials ---
+    // Odoo creds
     const ODOO_URL = "https://golfph.odoo.com";
     const DB = "golfph";
-    const UID = 2; // ✅ must be your numeric Odoo user ID
+    const UID = 2;
     const API_KEY = "62f86f3db7ba96368763a9d85b443f58f6458e4b";
 
-    // --- 🧩 Data for Odoo's res.partner ---
+    // build partner values
     const partnerVals = {
       name: name || "No name provided",
       email,
       phone,
-      street: address, // combined address in one line
+      street: address,
       x_studio_date_joined: dateJoined || null,
       x_studio_date_expiry: dateExpiry || null,
-      x_studio_subscription_plan: subscriptionId || 2, // Many2one (ID)
+      x_studio_subscription_plan: subscriptionId || 2,
+      // 👉 NEW: store BD member id
+      x_studio_bd_member_id: bdMemberId || null,
     };
 
-    // --- Build JSON-RPC payload for Odoo ---
     const payload = {
       jsonrpc: "2.0",
       method: "call",
@@ -68,7 +70,6 @@ export async function POST(req) {
       id: Date.now(),
     };
 
-    // --- Send to Odoo ---
     const odooRes = await fetch(`${ODOO_URL}/jsonrpc`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
