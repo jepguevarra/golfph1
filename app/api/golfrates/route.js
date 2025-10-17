@@ -8,10 +8,10 @@ const CORS_HEADERS = {
   "Access-Control-Max-Age": "86400",
 };
 
-const ODOO_URL = "https://puddle-paper.odoo.com";
-const DB = "puddle-paper";
+const ODOO_URL = "https://golfph.odoo.com";
+const DB = "golfph";
 const UID = 2;
-const API_KEY = "a6b8180478f3e13af0c42ed6087350df7bbbb7aa";
+const API_KEY = "62f86f3db7ba96368763a9d85b443f58f6458e4b";
 
 const MODEL_GOLF_RATES = "x_golf_course_rates_line_931dd";
 const MODEL_GOLF_COURSE = "x_golf_course";
