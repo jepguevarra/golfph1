@@ -14,7 +14,7 @@ export async function POST(req) {
   try {
     const body = await req.json();
 
-    // existing fields
+    // Extract all expected fields
     const name = (body?.name || "").trim();
     const email = (body?.email || "").trim();
     const phone = (body?.phone || "").trim();
@@ -22,24 +22,65 @@ export async function POST(req) {
     const dateJoined = (body?.date_today || "").trim();
     const dateExpiry = (body?.date_next_year || "").trim();
     const subscriptionId = Number(body?.subscription_id ?? 4);
-
-    // 👉 NEW: BD member id
     const bdMemberId = (body?.bd_member_id ?? "").toString().trim();
 
-    if (!name && !email && !phone) {
+    if (!email && !phone) {
       return new Response(
-        JSON.stringify({ error: "Missing required data (name/email/phone)" }),
+        JSON.stringify({ error: "Missing key identity (email or phone)" }),
         { status: 400, headers: { ...CORS, "Content-Type": "application/json" } }
       );
     }
 
-    // Odoo creds
+    // --- 🔐 Odoo credentials ---
     const ODOO_URL = "https://golfph.odoo.com";
     const DB = "golfph";
     const UID = 2;
     const API_KEY = "62f86f3db7ba96368763a9d85b443f58f6458e4b";
 
-    // build partner values
+    // --- helper for Odoo JSON-RPC calls ---
+    async function callOdoo(model, method, args = [], kwargs = {}) {
+      const res = await fetch(`${ODOO_URL}/jsonrpc`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "call",
+          params: {
+            service: "object",
+            method: "execute_kw",
+            args: [DB, UID, API_KEY, model, method, args, kwargs],
+          },
+          id: Date.now(),
+        }),
+      });
+      const json = await res.json();
+      if (json.error) throw new Error(json.error.data?.message || json.error.message);
+      return json.result;
+    }
+
+    // 🔍 Try to find existing partner
+    let partnerId = null;
+    if (bdMemberId) {
+      const found = await callOdoo(
+        "res.partner",
+        "search",
+        [[["x_studio_bd_member_id", "=", bdMemberId]]],
+        { limit: 1 }
+      );
+      if (Array.isArray(found) && found.length) partnerId = found[0];
+    }
+
+    if (!partnerId && email) {
+      const found = await callOdoo(
+        "res.partner",
+        "search",
+        [[["email", "=", email]]],
+        { limit: 1 }
+      );
+      if (Array.isArray(found) && found.length) partnerId = found[0];
+    }
+
+    // Common partner values
     const partnerVals = {
       name: name || "No name provided",
       email,
@@ -48,35 +89,19 @@ export async function POST(req) {
       x_studio_date_joined: dateJoined || null,
       x_studio_date_expiry: dateExpiry || null,
       x_studio_subscription_plan: subscriptionId || 2,
-      // 👉 NEW: store BD member id
       x_studio_bd_member_id: bdMemberId || null,
     };
 
-    const payload = {
-      jsonrpc: "2.0",
-      method: "call",
-      params: {
-        service: "object",
-        method: "execute_kw",
-        args: [
-          DB,
-          UID,
-          API_KEY,
-          "res.partner",
-          "create",
-          [partnerVals],
-        ],
-      },
-      id: Date.now(),
-    };
-
-    const odooRes = await fetch(`${ODOO_URL}/jsonrpc`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    const result = await odooRes.json();
+    let result;
+    if (partnerId) {
+      // 🔁 Update existing record
+      await callOdoo("res.partner", "write", [[partnerId], partnerVals]);
+      result = { updated: true, partner_id: partnerId };
+    } else {
+      // 🆕 Create new record
+      const newId = await callOdoo("res.partner", "create", [partnerVals]);
+      result = { created: true, partner_id: newId };
+    }
 
     return new Response(JSON.stringify(result), {
       status: 200,
