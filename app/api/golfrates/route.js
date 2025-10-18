@@ -41,29 +41,19 @@ async function callOdoo(model, method, args = [], kwargs = {}) {
 
 function normalizeStatus(status) {
   const s = String(status || "").trim().toLowerCase();
-  // common variants normalized
   if (["expired", "expire", "exp"].includes(s)) return "expired";
   if (["new", "pending", "awaiting activation"].includes(s)) return "new";
   if (["cancelled", "canceled", "inactive"].includes(s)) return "cancelled";
-  if (!s) return ""; // unknown/blank → treat as active
-  return s; // e.g., "active"
+  if (!s) return "";
+  return s;
 }
-
 function statusBlockInfo(statusRaw) {
   const s = normalizeStatus(statusRaw);
   if (s === "expired" || s === "cancelled") {
-    return {
-      blocked: true,
-      message: "Your membership is not active. Please renew your membership.",
-      status: s,
-    };
+    return { blocked: true, message: "Your membership is not active. Please renew your membership.", status: s };
   }
   if (s === "new") {
-    return {
-      blocked: true,
-      message: "Your membership is pending. Please wait for account activation.",
-      status: s,
-    };
+    return { blocked: true, message: "Your membership is pending. Please wait for account activation.", status: s };
   }
   return { blocked: false, message: "", status: s || "active" };
 }
@@ -80,9 +70,8 @@ export async function GET(request) {
     const memberBdid = searchParams.get("member_bdid");
     const memberEmail = searchParams.get("member_email");
 
-    // Member lookup path
+    // Member lookup
     if (memberBdid || memberEmail) {
-      // Build domain by precedence: BD member id first, else email
       const domain = memberBdid
         ? [["x_studio_bd_member_id", "=", String(memberBdid)]]
         : [["email", "=", String(memberEmail)]];
@@ -97,7 +86,8 @@ export async function GET(request) {
             "name",
             "x_studio_free_buddy_passes",
             "x_studio_date_expiry",
-            "x_studio_selection_field_33m_1j7j68j38", // membership status
+            "x_studio_selection_field_33m_1j7j68j38",          // membership status
+            "x_studio_golf_ph_priveledge_card_no"              // <-- privilege card number (added back)
           ],
           limit: 1,
         }
@@ -113,9 +103,10 @@ export async function GET(request) {
           name: rec.name,
           x_studio_free_buddy_passes: rec.x_studio_free_buddy_passes ?? 0,
           x_studio_date_expiry: rec.x_studio_date_expiry || null,
-          status: sb.status,                 // normalized: active/expired/new/cancelled
-          status_blocked: sb.blocked,        // boolean for UI gating
-          status_message: sb.message,        // friendly message
+          status: sb.status,
+          status_blocked: sb.blocked,
+          status_message: sb.message,
+          card_no: rec.x_studio_golf_ph_priveledge_card_no || "" // <-- expose to client
         };
       }
 
@@ -125,7 +116,7 @@ export async function GET(request) {
       });
     }
 
-    // Rates list path
+    // Rates list
     const rates = await callOdoo(
       MODEL_GOLF_RATES,
       "search_read",
@@ -210,7 +201,6 @@ export async function POST(request) {
       throw new Error("Missing required fields.");
     }
 
-    // 1) Resolve partner by BD Member ID
     const partner = (await callOdoo(
       MODEL_PARTNER,
       "search_read",
@@ -232,7 +222,6 @@ export async function POST(request) {
       });
     }
 
-    // 2) Block based on status
     const block = statusBlockInfo(partner.x_studio_selection_field_33m_1j7j68j38);
     if (block.blocked) {
       return new Response(JSON.stringify({
@@ -245,10 +234,8 @@ export async function POST(request) {
       });
     }
 
-    // 3) Compute preview used passes (client also computes; server confirms)
     const usedBuddyPass = Math.max(0, players.length - 1);
 
-    // 4) Create tee time
     const teeId = await callOdoo(
       MODEL_TEE,
       "create",
