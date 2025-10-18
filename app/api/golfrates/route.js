@@ -18,6 +18,7 @@ const MODEL_GOLF_COURSE = "x_golf_course";
 const MODEL_PARTNER = "res.partner";
 const MODEL_TEE = "x_tee_time_appointment";
 
+// ---------- helpers ----------
 async function callOdoo(model, method, args = [], kwargs = {}) {
   const res = await fetch(`${ODOO_URL}/jsonrpc`, {
     method: "POST",
@@ -38,38 +39,93 @@ async function callOdoo(model, method, args = [], kwargs = {}) {
   return json.result;
 }
 
+function normalizeStatus(status) {
+  const s = String(status || "").trim().toLowerCase();
+  // common variants normalized
+  if (["expired", "expire", "exp"].includes(s)) return "expired";
+  if (["new", "pending", "awaiting activation"].includes(s)) return "new";
+  if (["cancelled", "canceled", "inactive"].includes(s)) return "cancelled";
+  if (!s) return ""; // unknown/blank → treat as active
+  return s; // e.g., "active"
+}
+
+function statusBlockInfo(statusRaw) {
+  const s = normalizeStatus(statusRaw);
+  if (s === "expired" || s === "cancelled") {
+    return {
+      blocked: true,
+      message: "Your membership is not active. Please renew your membership.",
+      status: s,
+    };
+  }
+  if (s === "new") {
+    return {
+      blocked: true,
+      message: "Your membership is pending. Please wait for account activation.",
+      status: s,
+    };
+  }
+  return { blocked: false, message: "", status: s || "active" };
+}
+
+// ---------- routes ----------
 export async function OPTIONS() {
   return new Response(null, { status: 200, headers: CORS_HEADERS });
 }
 
-// GET: member lookup (by email) or golf rates list
+// GET: member lookup (by BD member id OR email) OR golf rates list
 export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);
+    const memberBdid = searchParams.get("member_bdid");
     const memberEmail = searchParams.get("member_email");
 
-    if (memberEmail) {
+    // Member lookup path
+    if (memberBdid || memberEmail) {
+      // Build domain by precedence: BD member id first, else email
+      const domain = memberBdid
+        ? [["x_studio_bd_member_id", "=", String(memberBdid)]]
+        : [["email", "=", String(memberEmail)]];
+
       const partner = await callOdoo(
         MODEL_PARTNER,
         "search_read",
-        [[["email", "=", memberEmail]]],
+        [domain],
         {
           fields: [
             "id",
             "name",
             "x_studio_free_buddy_passes",
-            "x_studio_golf_ph_priveledge_card_no",
-            "x_studio_date_expiry", // <- NEW
+            "x_studio_date_expiry",
+            "x_studio_selection_field_33m_1j7j68j38", // membership status
           ],
           limit: 1,
         }
       );
-      return new Response(JSON.stringify({ member: partner[0] || null }), {
+
+      const rec = partner?.[0] || null;
+
+      let payload = { member: null };
+      if (rec) {
+        const sb = statusBlockInfo(rec.x_studio_selection_field_33m_1j7j68j38);
+        payload.member = {
+          id: rec.id,
+          name: rec.name,
+          x_studio_free_buddy_passes: rec.x_studio_free_buddy_passes ?? 0,
+          x_studio_date_expiry: rec.x_studio_date_expiry || null,
+          status: sb.status,                 // normalized: active/expired/new/cancelled
+          status_blocked: sb.blocked,        // boolean for UI gating
+          status_message: sb.message,        // friendly message
+        };
+      }
+
+      return new Response(JSON.stringify(payload), {
         status: 200,
         headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
       });
     }
 
+    // Rates list path
     const rates = await callOdoo(
       MODEL_GOLF_RATES,
       "search_read",
@@ -107,7 +163,6 @@ export async function GET(request) {
       : [];
 
     const courseMap = Object.fromEntries(courses.map(c => [c.id, c]));
-
     const lines = rates.map(r => {
       const cid = r.x_studio_golf_course?.[0];
       const cname = r.x_studio_golf_course?.[1];
@@ -145,27 +200,55 @@ export async function GET(request) {
   }
 }
 
-// POST: create tee time (NO buddy pass deduction here)
+// POST: create tee time (BY BD MEMBER ID ONLY; blocks when status is not active)
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { golf_course_id, email, date, time, players } = body;
+    const { golf_course_id, bd_member_id, date, time, players } = body;
 
-    if (!golf_course_id || !email || !date || !time || !Array.isArray(players) || !players.length) {
+    if (!golf_course_id || !bd_member_id || !date || !time || !Array.isArray(players) || !players.length) {
       throw new Error("Missing required fields.");
     }
 
+    // 1) Resolve partner by BD Member ID
     const partner = (await callOdoo(
       MODEL_PARTNER,
       "search_read",
-      [[["email", "=", email]]],
-      { fields: ["id", "x_studio_free_buddy_passes"], limit: 1 }
+      [[["x_studio_bd_member_id", "=", String(bd_member_id)]]],
+      {
+        fields: [
+          "id",
+          "x_studio_selection_field_33m_1j7j68j38", // status
+          "x_studio_free_buddy_passes",
+        ],
+        limit: 1,
+      }
     ))?.[0];
-    if (!partner) throw new Error("Member not found.");
 
-    // Used passes (preview-only, do not write in POST)
+    if (!partner) {
+      return new Response(JSON.stringify({ error: "Member not found." }), {
+        status: 404,
+        headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+      });
+    }
+
+    // 2) Block based on status
+    const block = statusBlockInfo(partner.x_studio_selection_field_33m_1j7j68j38);
+    if (block.blocked) {
+      return new Response(JSON.stringify({
+        blocked: true,
+        error: block.message,
+        status: block.status
+      }), {
+        status: 403,
+        headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+      });
+    }
+
+    // 3) Compute preview used passes (client also computes; server confirms)
     const usedBuddyPass = Math.max(0, players.length - 1);
 
+    // 4) Create tee time
     const teeId = await callOdoo(
       MODEL_TEE,
       "create",
