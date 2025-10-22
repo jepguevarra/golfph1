@@ -1,6 +1,6 @@
 // /app/api/golfrates/route.js
 
-const ALLOWED_ORIGIN = "https://appsumo55348.directoryup.com";
+const ALLOWED_ORIGIN = "https://members.golfph.com";
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
