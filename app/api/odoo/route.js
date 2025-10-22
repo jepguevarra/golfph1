@@ -1,7 +1,7 @@
 // /app/api/odoo/route.js
 // Upsert partner preferring BDID for updates; create by email if no match exists.
 
-const ORIGIN = "https://appsumo55348.directoryup.com";
+const ORIGIN = "https://members.golfph.com";
 
 const CORS = {
   "Access-Control-Allow-Origin": ORIGIN,
