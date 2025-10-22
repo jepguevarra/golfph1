@@ -1,5 +1,5 @@
 // /app/api/odoo/route.js
-// Upsert partner on signup by EMAIL; set BD ID later via collector (email->BDID) exactly once.
+// Upsert partner preferring BDID for updates; create by email if no match exists.
 
 const ORIGIN = "https://appsumo55348.directoryup.com";
 
@@ -44,13 +44,13 @@ export async function POST(req) {
   try {
     const body = await req.json();
 
-    // Router:
-    // If the request explicitly asks to set the BD ID (from dashboard collector) -> do that.
-    // Otherwise treat it as signup/profile upsert by email.
+    // If explicitly asked to set BDID (from dashboard collector), do that flow.
     if (body?.set_bd_member_id) {
       return await setBdidOnce(body);
     }
-    return await upsertByEmail(body);
+
+    // Default: upsert partner, **BDID-first**.
+    return await upsertPartner(body);
 
   } catch (err) {
     console.error("❌ Odoo route error:", err);
@@ -96,7 +96,6 @@ async function setBdidOnce(payload) {
     );
   }
 
-  // ✅ FIXED: removed the extra closing bracket here
   await callOdoo("res.partner", "write", [[partner.id], { x_studio_bd_member_id: bdMemberId }]);
 
   return new Response(
@@ -105,57 +104,83 @@ async function setBdidOnce(payload) {
   );
 }
 
-// ---------- 2) Signup / profile upsert by EMAIL (create if missing) ----------
-async function upsertByEmail(payload) {
-  const name          = (payload?.name || "").trim();
-  const email         = (payload?.email || "").trim();
-  const phone         = (payload?.phone || "").trim();
-  const address       = (payload?.address || "").trim();
-  const dateJoined    = (payload?.date_today || "").trim();
-  const dateExpiry    = (payload?.date_next_year || "").trim();
-  const subscriptionId= Number(payload?.subscription_id ?? 0);
-  const bdMemberId    = (payload?.bd_member_id || "").trim(); // may or may not be present on signup
+// ---------- 2) Upsert partner (BDID-first; create by email if no match) ----------
+async function upsertPartner(payload) {
+  const name           = (payload?.name || "").trim();
+  const email          = (payload?.email || "").trim();
+  const phone          = (payload?.phone || "").trim();
+  const address        = (payload?.address || "").trim(); // concatenated widget address
+  const dateJoined     = (payload?.date_today || "").trim();
+  const dateExpiry     = (payload?.date_next_year || "").trim();
+  const subscriptionId = Number(payload?.subscription_id ?? 0);
+  const bdMemberId     = (payload?.bd_member_id || "").trim(); // may be empty on first signup
 
-  if (!email) {
-    return new Response(
-      JSON.stringify({ success: false, message: "email is required" }),
-      { status: 400, headers: { ...CORS, "Content-Type": "application/json" } }
+  const BDID_FIELD = "x_studio_bd_member_id";
+
+  // build values to write (omit empties)
+  const vals = {};
+  if (name)       vals.name = name;
+  if (email)      vals.email = email;     // allow email change during update
+  if (phone)      vals.phone = phone;
+  if (address)    vals.street = address;
+  if (dateJoined) vals.x_studio_date_joined = dateJoined;
+  if (dateExpiry) vals.x_studio_date_expiry  = dateExpiry;
+  if (subscriptionId > 0) vals.x_studio_subscription_plan = subscriptionId;
+
+  // ---------- A) Try BDID match first ----------
+  let partnerId = null;
+  if (bdMemberId) {
+    const byBdid = await callOdoo(
+      "res.partner",
+      "search_read",
+      [[ [BDID_FIELD, "=", bdMemberId] ]],
+      { fields: ["id"], limit: 1 }
     );
+    if (byBdid?.length) partnerId = byBdid[0].id;
   }
 
-  const baseVals = {};
-  if (name)       baseVals.name = name;
-  if (phone)      baseVals.phone = phone;
-  if (address)    baseVals.street = address;
-  if (dateJoined) baseVals.x_studio_date_joined = dateJoined;
-  if (dateExpiry) baseVals.x_studio_date_expiry  = dateExpiry;
-  if (subscriptionId > 0) baseVals.x_studio_subscription_plan = subscriptionId;
+  // ---------- B) If no BDID match, try EMAIL then PHONE ----------
+  if (!partnerId && email) {
+    const byEmail = await callOdoo(
+      "res.partner",
+      "search_read",
+      [[ ["email", "=", email] ]],
+      { fields: ["id", BDID_FIELD], limit: 1 }
+    );
+    if (byEmail?.length) partnerId = byEmail[0].id;
+  }
 
-  // Look up by email
-  const partners = await callOdoo(
-    "res.partner",
-    "search_read",
-    [[["email", "=", email]]],
-    { fields: ["id", "x_studio_bd_member_id"], limit: 1 }
-  );
+  if (!partnerId && phone) {
+    const byPhone = await callOdoo(
+      "res.partner",
+      "search_read",
+      [[ ["phone", "=", phone] ]],
+      { fields: ["id", BDID_FIELD], limit: 1 }
+    );
+    if (byPhone?.length) partnerId = byPhone[0].id;
+  }
 
-  if (partners.length) {
-    const id = partners[0].id;
-    // Do not overwrite BD ID here; collector handles that one-time set
-    await callOdoo("res.partner", "write", [[id], baseVals]);
+  // ---------- C) Update if found ----------
+  if (partnerId) {
+    // IMPORTANT: do not overwrite BDID here unless you explicitly want to.
+    await callOdoo("res.partner", "write", [[partnerId], vals]);
     return new Response(
-      JSON.stringify({ success: true, updated: true, partner_id: id, fields: baseVals }),
+      JSON.stringify({ success: true, updated: true, partner_id: partnerId, fields: vals, basis: bdMemberId ? "bdid" : (email ? "email" : "phone") }),
       { status: 200, headers: { ...CORS, "Content-Type": "application/json" } }
     );
   }
 
-  // Create new partner
-  const createVals = {
-    email,
-    ...baseVals,
-  };
-  // If BD ID is already known at creation time, include it (harmless on first create)
-  if (bdMemberId) createVals.x_studio_bd_member_id = bdMemberId;
+  // ---------- D) Create if not found ----------
+  // We require email for creation (so Odoo has a unique contact point)
+  if (!email) {
+    return new Response(
+      JSON.stringify({ success: false, message: "No existing partner matched; 'email' is required to create a new contact." }),
+      { status: 400, headers: { ...CORS, "Content-Type": "application/json" } }
+    );
+  }
+
+  const createVals = { email, ...vals };
+  if (bdMemberId) createVals[BDID_FIELD] = bdMemberId; // attach BDID at creation if available
 
   const newId = await callOdoo("res.partner", "create", [createVals]);
 
