@@ -126,7 +126,7 @@ export async function GET(request) {
       "x_studio_time",                                  // Time
       "x_studio_selection_field_8jm_1j7dq7a1s",         // Pipeline status bar (status)
       "x_studio_golf_course",                           // Many2one: [id, name]
-      "x_studio_buddy_pass_deduction",                  // Buddy Pass Deduction
+      "x_studio_used_buddy_pass",                  // Buddy Pass Deduction
       "x_studio_sequence"                               // Sequence
     ];
 
