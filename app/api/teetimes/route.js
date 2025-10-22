@@ -154,7 +154,7 @@ export async function GET(request) {
         status: r["x_studio_selection_field_8jm_1j7dq7a1s"] || "",
         golf_course_id: gc[0],
         golf_course_name: gc[1] || "",
-        buddy_pass_deduction: r.x_studio_buddy_pass_deduction ?? null,
+        buddy_pass_deduction: r.x_studio_used_buddy_pass ?? null,
         sequence: r.x_studio_sequence ?? null,
       };
     });
