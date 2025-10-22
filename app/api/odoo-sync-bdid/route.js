@@ -2,7 +2,7 @@
 // Purpose: Sync BD Member ID → Odoo (writes x_studio_bd_member_id if empty)
 
 const CORS = {
-  "Access-Control-Allow-Origin": "https://appsumo55348.directoryup.com",
+  "Access-Control-Allow-Origin": "https://members.golfph.com",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
   "Access-Control-Max-Age": "86400",
