@@ -47,6 +47,7 @@ function normalizeStatus(status) {
   if (!s) return "";
   return s;
 }
+
 function statusBlockInfo(statusRaw) {
   const s = normalizeStatus(statusRaw);
   if (s === "expired" || s === "cancelled") {
@@ -86,16 +87,16 @@ export async function GET(request) {
             "name",
             "x_studio_free_buddy_passes",
             "x_studio_date_expiry",
-            "x_studio_selection_field_33m_1j7j68j38",          // membership status
-            "x_studio_golf_ph_priveledge_card_no"              // <-- privilege card number (added back)
+            "x_studio_selection_field_33m_1j7j68j38", // membership status
+            "x_studio_golf_ph_priveledge_card_no" // privilege card number
           ],
           limit: 1,
         }
       );
 
       const rec = partner?.[0] || null;
-
       let payload = { member: null };
+
       if (rec) {
         const sb = statusBlockInfo(rec.x_studio_selection_field_33m_1j7j68j38);
         payload.member = {
@@ -106,7 +107,7 @@ export async function GET(request) {
           status: sb.status,
           status_blocked: sb.blocked,
           status_message: sb.message,
-          card_no: rec.x_studio_golf_ph_priveledge_card_no || "" // <-- expose to client
+          card_no: rec.x_studio_golf_ph_priveledge_card_no || ""
         };
       }
 
@@ -195,12 +196,23 @@ export async function GET(request) {
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { golf_course_id, bd_member_id, date, time, players } = body;
+    const {
+      golf_course_id,
+      bd_member_id,
+      date,
+      time,
+      players,
+      used_buddy_pass,
+      buddy_pass_deduction,
+      non_member_count,
+      meta
+    } = body;
 
     if (!golf_course_id || !bd_member_id || !date || !time || !Array.isArray(players) || !players.length) {
       throw new Error("Missing required fields.");
     }
 
+    // Find the member in Odoo
     const partner = (await callOdoo(
       MODEL_PARTNER,
       "search_read",
@@ -222,6 +234,7 @@ export async function POST(request) {
       });
     }
 
+    // Validate membership status
     const block = statusBlockInfo(partner.x_studio_selection_field_33m_1j7j68j38);
     if (block.blocked) {
       return new Response(JSON.stringify({
@@ -234,8 +247,17 @@ export async function POST(request) {
       });
     }
 
-    const usedBuddyPass = Math.max(0, players.length - 1);
+    // ✅ Prefer frontend-calculated used buddy pass
+    const usedBuddyPass =
+      (typeof used_buddy_pass === "number" && !isNaN(used_buddy_pass))
+        ? used_buddy_pass
+        : Math.max(0, players.length - 1);
 
+    console.log("[POST] used_buddy_pass (frontend):", used_buddy_pass);
+    console.log("[POST] usedBuddyPass (final):", usedBuddyPass);
+    console.log("[POST] meta info:", meta);
+
+    // Create tee record in Odoo
     const teeId = await callOdoo(
       MODEL_TEE,
       "create",
@@ -252,12 +274,14 @@ export async function POST(request) {
     return new Response(JSON.stringify({
       success: true,
       tee_id: teeId,
-      preview_used_buddy_pass: usedBuddyPass
+      used_buddy_pass: usedBuddyPass,
+      preview_used_buddy_pass: used_buddy_pass,
     }), {
       status: 200,
       headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
     });
   } catch (e) {
+    console.error("[POST ERROR]", e);
     return new Response(JSON.stringify({ error: e.message }), {
       status: 500,
       headers: CORS_HEADERS,
