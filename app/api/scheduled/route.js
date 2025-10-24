@@ -1,111 +1,91 @@
 // app/api/scheduled/route.js
-export const dynamic = "force-dynamic"; // never cache responses
+export const dynamic = "force-dynamic"; // don't cache
 
-// ===== Config (prefer ENV VARS) =====
-const ODOO_URL  = process.env.ODOO_URL  || "https://golfph.odoo.com";
-const ODOO_DB   = process.env.ODOO_DB   || "golfph";
-const ODOO_LOGIN= process.env.ODOO_LOGIN|| "leadsanalytics@gmail.com"; // <-- your Odoo email
-const ODOO_API  = process.env.ODOO_API_KEY || "62f86f3db7ba96368763a9d85b443f58f6458e4b";
+// ---- Odoo config (match your working routes) ----
+const ODOO_URL = "https://golfph.odoo.com";
+const DB = "golfph";
+const UID = 2; // must match the user who owns the API key
+const API_KEY = "62f86f3db7ba96368763a9d85b443f58f6458e4b";
 
-// Model & fields
+// ---- Model & fields ----
 const MODEL_PARTNER = "res.partner";
-const ACTIVE_FIELD = "active"; // or change to your custom “active member” field
+const ACTIVE_FIELD = "active"; // change if you use a custom flag
 const NEAR_EXPIRY_FIELD = "x_studio_near_expiry_date"; // Date
 const STATUS_FIELD = "x_studio_selection_field_33m_1j7j68j38"; // Selection
-const STATUS_NEAR_VALUE = "nexpire"; // selection KEY (not label)
+const STATUS_NEAR = "nexpire"; // selection KEY (not label)
 
-// ===== Helpers =====
+// ---- Helpers ----
 function ymdInTZ(date, tz = "Asia/Manila") {
-  const dtf = new Intl.DateTimeFormat("en-CA", {
-    timeZone: tz,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
   });
-  const parts = dtf.formatToParts(date).reduce((a, p) => {
-    a[p.type] = p.value; return a;
-  }, {});
-  return `${parts.year}-${parts.month}-${parts.day}`;
+  const p = Object.fromEntries(fmt.formatToParts(date).map(x => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day}`; // YYYY-MM-DD
 }
 
-async function odooRpc(payload) {
+async function callOdoo(model, method, args = [], kwargs = {}) {
   const res = await fetch(`${ODOO_URL}/jsonrpc`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: String(Math.random()), ...payload }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      method: "call",
+      params: {
+        service: "object",
+        method: "execute_kw",
+        args: [DB, UID, API_KEY, model, method, args, kwargs],
+      },
+      id: Date.now(),
+    }),
   });
   const json = await res.json();
   if (json.error) {
-    const msg = json.error.data?.message || JSON.stringify(json.error);
-    throw new Error(msg);
+    throw new Error(json.error.data?.message || json.error.message || "Odoo RPC error");
   }
   return json.result;
 }
 
-async function authenticate() {
-  console.log("[Cron] Authenticating…");
-  const uid = await odooRpc({
-    method: "call",
-    params: {
-      service: "common",
-      method: "authenticate",
-      args: [ODOO_DB, ODOO_LOGIN, ODOO_API, {}],
-    },
-  });
-  if (!uid) throw new Error("Authentication failed (uid=null). Check ODOO_LOGIN/API key/DB.");
-  console.log("[Cron] Auth OK. uid =", uid);
-  return uid;
-}
+// ---- API: GET (cron/manual) ----
+export async function GET(request) {
+  const url = new URL(request.url);
+  const dryRun = url.searchParams.has("dry") || url.searchParams.get("mode") === "dry";
 
-async function executeKw(uid, model, method, args = [], kwargs = {}) {
-  return odooRpc({
-    method: "call",
-    params: {
-      service: "object",
-      method: "execute_kw",
-      args: [ODOO_DB, uid, ODOO_API, model, method, args, kwargs],
-    },
-  });
-}
-
-// ===== Main handler =====
-export async function GET() {
-  const startedAt = new Date().toISOString();
   try {
-    const todayYMD = ymdInTZ(new Date(), "Asia/Manila");
-    console.log(`[Cron] Near-expiry job start @ ${startedAt} (today=${todayYMD})`);
+    const today = ymdInTZ(new Date(), "Asia/Manila");
 
-    const uid = await authenticate();
-
-    // Only ACTIVE members with near_expiry_date <= today and not already 'nexpire'
+    // Domain: active + near_expiry set + near_expiry <= today + not already 'nexpire'
     const domain = [
       [ACTIVE_FIELD, "=", true],
       [NEAR_EXPIRY_FIELD, "!=", false],
-      [NEAR_EXPIRY_FIELD, "<=", todayYMD],
-      [STATUS_FIELD, "!=", STATUS_NEAR_VALUE],
+      [NEAR_EXPIRY_FIELD, "<=", today],
+      [STATUS_FIELD, "!=", STATUS_NEAR],
     ];
 
-    console.log("[Cron] Searching partners with domain:", JSON.stringify(domain));
-    const ids = await executeKw(uid, MODEL_PARTNER, "search", [domain], { limit: 5000 });
-    console.log(`[Cron] Found ${ids.length} partner(s) to update`);
+    // 1) find IDs (batch size big enough for your 200 members)
+    const ids = await callOdoo(MODEL_PARTNER, "search", [domain], { limit: 5000 });
 
     if (!ids.length) {
-      return Response.json({ ok: true, today: todayYMD, updated: 0, ids: [] });
+      return Response.json({ ok: true, today, updated: 0, ids: [], dryRun });
     }
 
-    // Batch update in one write call
-    console.log("[Cron] Writing status 'nexpire' to IDs:", ids.slice(0, 20), ids.length > 20 ? "…(truncated)" : "");
-    const writeOk = await executeKw(uid, MODEL_PARTNER, "write", [ids, {
-      [STATUS_FIELD]: STATUS_NEAR_VALUE,
-    }]);
+    if (dryRun) {
+      return Response.json({ ok: true, today, would_update: ids.length, ids, dryRun: true });
+    }
 
-    console.log(`[Cron] Write result: ${writeOk ? "OK" : "FAILED"}`);
-    return Response.json({ ok: !!writeOk, today: todayYMD, updated: ids.length, ids });
+    // 2) write once for all ids
+    const writeOk = await callOdoo(MODEL_PARTNER, "write", [ids, { [STATUS_FIELD]: STATUS_NEAR }]);
+
+    return Response.json({
+      ok: !!writeOk,
+      today,
+      updated: ids.length,
+      ids,
+    });
   } catch (err) {
-    console.error("[Cron] ERROR:", err?.message || String(err));
+    console.error("[scheduled] ERROR:", err);
     return new Response(JSON.stringify({ ok: false, error: String(err) }), {
       status: 500,
-      headers: { "content-type": "application/json" },
+      headers: { "Content-Type": "application/json" },
     });
   }
 }
