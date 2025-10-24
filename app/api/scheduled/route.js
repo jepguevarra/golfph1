@@ -1,118 +1,111 @@
-// app/api/near-expiry/route.js
-export const dynamic = "force-dynamic"; // always run on demand (not cached)
-// export const runtime = "nodejs"; // uncomment if you prefer Node runtime on Vercel
+// app/api/scheduled/route.js
+export const dynamic = "force-dynamic"; // never cache responses
 
-// ====== ODOO CONFIG (use ENV VARS in production) ======
-const ODOO_URL = "https://golfph.odoo.com";
-const DB = "golfph";
-const UID = 2; // not actually used; Odoo returns uid from authenticate
-const API_KEY = "62f86f3db7ba96368763a9d85b443f58f6458e4b";
+// ===== Config (prefer ENV VARS) =====
+const ODOO_URL  = process.env.ODOO_URL  || "https://golfph.odoo.com";
+const ODOO_DB   = process.env.ODOO_DB   || "golfph";
+const ODOO_LOGIN= process.env.ODOO_LOGIN|| "leadsanalytics@gmail.com"; // <-- your Odoo email
+const ODOO_API  = process.env.ODOO_API_KEY || "62f86f3db7ba96368763a9d85b443f58f6458e4b";
 
+// Model & fields
 const MODEL_PARTNER = "res.partner";
-
-
-// ====== FIELD NAMES (adjust if yours differ) ======
+const ACTIVE_FIELD = "active"; // or change to your custom “active member” field
 const NEAR_EXPIRY_FIELD = "x_studio_near_expiry_date"; // Date
 const STATUS_FIELD = "x_studio_selection_field_33m_1j7j68j38"; // Selection
-const STATUS_NEAR_EXPIRY_VALUE = "nexpire"; // selection key (not label)
-const ACTIVE_FIELD = "active"; // boolean "Active" on res.partner
+const STATUS_NEAR_VALUE = "nexpire"; // selection KEY (not label)
 
-// ====== Helpers ======
+// ===== Helpers =====
 function ymdInTZ(date, tz = "Asia/Manila") {
-  const dtf = new Intl.DateTimeFormat("en-CA", { // yields YYYY-MM-DD
+  const dtf = new Intl.DateTimeFormat("en-CA", {
     timeZone: tz,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
   });
-  const parts = dtf.formatToParts(date).reduce((a, p) => (a[p.type] = p.value, a), {});
+  const parts = dtf.formatToParts(date).reduce((a, p) => {
+    a[p.type] = p.value; return a;
+  }, {});
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
-async function odooRpc(method, params) {
+async function odooRpc(payload) {
   const res = await fetch(`${ODOO_URL}/jsonrpc`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: String(Math.random()),
-      method: "call",
-      params: { ...params },
-    }),
+    body: JSON.stringify({ jsonrpc: "2.0", id: String(Math.random()), ...payload }),
   });
   const json = await res.json();
-  if (json.error) throw new Error(json.error.data?.message || JSON.stringify(json.error));
+  if (json.error) {
+    const msg = json.error.data?.message || JSON.stringify(json.error);
+    throw new Error(msg);
+  }
   return json.result;
 }
 
 async function authenticate() {
-  const uid = await odooRpc("call", {
-    service: "common",
-    method: "authenticate",
-    args: [DB, /* login */ null, /* api key */ API_KEY, {}],
+  console.log("[Cron] Authenticating…");
+  const uid = await odooRpc({
+    method: "call",
+    params: {
+      service: "common",
+      method: "authenticate",
+      args: [ODOO_DB, ODOO_LOGIN, ODOO_API, {}],
+    },
   });
-  if (!uid) throw new Error("Odoo authentication failed. Check API key.");
+  if (!uid) throw new Error("Authentication failed (uid=null). Check ODOO_LOGIN/API key/DB.");
+  console.log("[Cron] Auth OK. uid =", uid);
   return uid;
 }
 
 async function executeKw(uid, model, method, args = [], kwargs = {}) {
-  return odooRpc("call", {
-    service: "object",
-    method: "execute_kw",
-    args: [DB, uid, API_KEY, model, method, args, kwargs],
+  return odooRpc({
+    method: "call",
+    params: {
+      service: "object",
+      method: "execute_kw",
+      args: [ODOO_DB, uid, ODOO_API, model, method, args, kwargs],
+    },
   });
 }
 
-// ====== Main handler ======
+// ===== Main handler =====
 export async function GET() {
+  const startedAt = new Date().toISOString();
   try {
-    // 1) Compute "today" in Asia/Manila
     const todayYMD = ymdInTZ(new Date(), "Asia/Manila");
+    console.log(`[Cron] Near-expiry job start @ ${startedAt} (today=${todayYMD})`);
 
-    // 2) Auth
     const uid = await authenticate();
 
-    // 3) Build domain:
-    // - Active partners
-    // - Near Expiry date is set
-    // - Near Expiry date <= today
-    // - Not already 'nexpire' (avoid needless writes)
+    // Only ACTIVE members with near_expiry_date <= today and not already 'nexpire'
     const domain = [
       [ACTIVE_FIELD, "=", true],
       [NEAR_EXPIRY_FIELD, "!=", false],
       [NEAR_EXPIRY_FIELD, "<=", todayYMD],
-      [STATUS_FIELD, "!=", STATUS_NEAR_EXPIRY_VALUE],
+      [STATUS_FIELD, "!=", STATUS_NEAR_VALUE],
     ];
 
-    // 4) Search IDs (batch limit to be safe; increase if needed)
+    console.log("[Cron] Searching partners with domain:", JSON.stringify(domain));
     const ids = await executeKw(uid, MODEL_PARTNER, "search", [domain], { limit: 5000 });
+    console.log(`[Cron] Found ${ids.length} partner(s) to update`);
 
     if (!ids.length) {
-      return Response.json({
-        ok: true,
-        message: "No partners to update",
-        today: todayYMD,
-        count: 0,
-      });
+      return Response.json({ ok: true, today: todayYMD, updated: 0, ids: [] });
     }
 
-    // 5) Write status = 'nexpire'
-    const writeRes = await executeKw(uid, MODEL_PARTNER, "write", [ids, {
-      [STATUS_FIELD]: STATUS_NEAR_EXPIRY_VALUE,
+    // Batch update in one write call
+    console.log("[Cron] Writing status 'nexpire' to IDs:", ids.slice(0, 20), ids.length > 20 ? "…(truncated)" : "");
+    const writeOk = await executeKw(uid, MODEL_PARTNER, "write", [ids, {
+      [STATUS_FIELD]: STATUS_NEAR_VALUE,
     }]);
 
-    return Response.json({
-      ok: true,
-      today: todayYMD,
-      updated: Boolean(writeRes),
-      count: ids.length,
-      ids,
-    });
+    console.log(`[Cron] Write result: ${writeOk ? "OK" : "FAILED"}`);
+    return Response.json({ ok: !!writeOk, today: todayYMD, updated: ids.length, ids });
   } catch (err) {
+    console.error("[Cron] ERROR:", err?.message || String(err));
     return new Response(JSON.stringify({ ok: false, error: String(err) }), {
       status: 500,
       headers: { "content-type": "application/json" },
     });
   }
 }
-
