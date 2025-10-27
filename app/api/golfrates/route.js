@@ -1,5 +1,3 @@
-// /app/api/golfrates/route.js
-
 const ALLOWED_ORIGIN = "https://members.golfph.com";
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
@@ -117,15 +115,16 @@ export async function GET(request) {
       });
     }
 
-    // Rates list
+    // ✅ Rates list — filtered by parent record’s "show_to_dashboard" flag
     const rates = await callOdoo(
       MODEL_GOLF_RATES,
       "search_read",
-      [[]],
+      [[["x_golf_course_rates_id.x_studio_show_to_dashboard", "=", true]]],
       {
         fields: [
           "id",
           "x_studio_golf_course",
+          "x_golf_course_rates_id", // included for reference/debugging
           "x_studio_local_wd",
           "x_studio_local_we",
           "x_studio_foreign_wd",
