@@ -41,20 +41,18 @@ export async function POST(request) {
     
     // --- 2. SEND FOX API CALL PREPARATION ---
     
-    // CRITICAL FIX: Target the list-specific endpoint to enforce subscription status
-    const listIdInt = parseInt(list_id);
-    // Use the list-specific endpoint: /lists/{list_id}/contacts
-    const endpoint = `${SENDFOX_API_BASE}/lists/${listIdInt}/contacts`;
+    // CRITICAL FIX: Revert the endpoint to the single /contacts endpoint 
+    // to fix the 405 error, as this endpoint accepts POST.
+    const endpoint = `${SENDFOX_API_BASE}/contacts`; 
 
-    // Prepare the final payload for the list endpoint
-    // NOTE: We DO NOT pass list_id in the body here, as it's in the URL path.
+    // Prepare the final payload, including list_id and status in the body.
     const sendfoxPayload = {
         email: email, 
         first_name: first_name, 
         last_name: last_name, 
+        list_id: parseInt(list_id), // Send the list ID back in the body
         
         // CRITICAL FIX: Explicitly set the status to 'subscribed'
-        // This parameter is most effective on the list-specific endpoint.
         "status": "subscribed", 
     };
 
@@ -69,22 +67,19 @@ export async function POST(request) {
             body: JSON.stringify(sendfoxPayload),
         });
 
-        // The list endpoint often returns a 204 No Content on success, 
-        // but we'll try to read the JSON just in case it returns data.
         let data = {};
         try {
             data = await response.json();
         } catch (e) {
-            // Ignore if response has no body (e.g., 204 No Content)
+            // Ignore if response has no body
         }
 
         // --- 3. RESPONSE HANDLING ---
 
         if (response.ok) { 
-            // Return success. If the status is not confirmed, it's a SendFox setting issue.
             return new Response(JSON.stringify({ 
                 success: true, 
-                message: 'Contact added and requested to be confirmed to the list.',
+                message: 'Contact added/updated. Please verify confirmation status.',
                 sendfox_data: data 
             }), { 
                 status: 200, 
