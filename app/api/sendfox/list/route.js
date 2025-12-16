@@ -1,74 +1,85 @@
-// golfph1/app/api/sendfox/sendfox-list.js
+// golfph1/app/api/sendfox/add/route.js
 
-// Using 'node-fetch' or similar for a clean HTTP request, 
-// but you can also use the native 'https' module.
-const fetch = require('node-fetch');
-
-// The SendFox API base URL
 const SENDFOX_API_BASE = 'https://api.sendfox.com';
-
-// 1. Get your Personal Access Token from your SendFox account settings -> API.
-// 2. Set it as an environment variable in Vercel (e.g., SENDFOX_API_TOKEN).
 const API_TOKEN = process.env.SENDFOX_API_TOKEN;
 
-export default async (req, res) => {
-    // 1. Only allow GET requests for fetching the list.
-    if (req.method !== 'GET') {
-        return res.status(405).json({ error: 'Method Not Allowed' });
-    }
-
+// This function handles the POST request to the /api/sendfox/add URL.
+export async function POST(request) {
     if (!API_TOKEN) {
-        // Essential security check: make sure the token is set.
-        console.error('SENDFOX_API_TOKEN is not set in environment variables.');
-        return res.status(500).json({ error: 'Server configuration error.' });
+        return new Response(JSON.stringify({ error: 'Server configuration error.' }), { 
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+        });
     }
 
-    const endpoint = `${SENDFOX_API_BASE}/lists`;
+    // 1. Parse the request body from Odoo/Server Action
+    let body;
+    try {
+        body = await request.json();
+    } catch (e) {
+        return new Response(JSON.stringify({ error: 'Invalid JSON body.' }), { status: 400 });
+    }
+
+    const { email, first_name, last_name, list_id } = body;
+
+    // 2. Validate essential fields
+    if (!email || !list_id) {
+        return new Response(JSON.stringify({ error: 'Missing required fields (email and list_id).' }), { status: 400 });
+    }
+
+    const endpoint = `${SENDFOX_API_BASE}/contacts`;
 
     try {
-        // 2. Make the GET request to the SendFox API
+        // 3. Prepare the data for SendFox (matching their POST /contacts structure)
+        const payload = {
+            email: email,
+            first_name: first_name || '', // Use empty string if not provided
+            last_name: last_name || '',
+            lists: [list_id], // The lists field expects an array of IDs
+            // Add other fields (e.g., tags) if needed
+        };
+
+        // 4. Make the POST request to SendFox
         const response = await fetch(endpoint, {
-            method: 'GET',
+            method: 'POST',
             headers: {
                 'Authorization': `Bearer ${API_TOKEN}`,
                 'Content-Type': 'application/json',
-                // SendFox might not strictly require 'Content-Type' for GET, 
-                // but it's good practice.
             },
+            body: JSON.stringify(payload),
         });
 
-        // 3. Handle SendFox API response status
-        if (!response.ok) {
+        // 5. Handle SendFox API response
+        if (response.status === 201) { // 201 Created is typical for a successful POST
+            const data = await response.json();
+            return new Response(JSON.stringify({ 
+                success: true, 
+                message: 'Contact added successfully to SendFox list.',
+                contact_id: data.id 
+            }), { 
+                status: 201,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        } else {
             const errorText = await response.text();
             console.error(`SendFox API error (${response.status}): ${errorText}`);
-            return res.status(response.status).json({ 
-                error: 'Failed to fetch lists from SendFox', 
+            return new Response(JSON.stringify({ 
+                error: 'Failed to add contact to SendFox', 
                 detail: errorText 
+            }), { 
+                status: response.status,
+                headers: { 'Content-Type': 'application/json' },
             });
         }
 
-        // 4. Parse and return the contact list data
-        const data = await response.json();
-        
-        // The SendFox /lists endpoint returns paginated data (e.g., { data: [/*lists*/], current_page: 1, ...})
-        // You might want to return only the list array 'data' to your Odoo client.
-        const contactLists = data.data || [];
-        
-        // Filter the essential list info you need for Odoo (ID, Name)
-        const simplifiedLists = contactLists.map(list => ({
-            id: list.id,
-            name: list.name,
-            // You can add other useful fields like contact count if the API provides it.
-        }));
-        
-        return res.status(200).json(simplifiedLists);
-
     } catch (error) {
-        // 5. Handle network or other unexpected errors
         console.error('An unexpected error occurred:', error);
-        return res.status(500).json({ 
+        return new Response(JSON.stringify({ 
             error: 'Internal Server Error', 
             detail: error.message 
+        }), { 
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
         });
     }
 };
