@@ -41,16 +41,17 @@ export async function POST(request) {
     
     // --- 2. SEND FOX API CALL PREPARATION ---
     
-    // CRITICAL FIX: Revert the endpoint to the single /contacts endpoint 
-    // to fix the 405 error, as this endpoint accepts POST.
+    // Use the simple /contacts endpoint
     const endpoint = `${SENDFOX_API_BASE}/contacts`; 
 
-    // Prepare the final payload, including list_id and status in the body.
+    // Prepare the final payload, including the CORRECT array structure for lists.
     const sendfoxPayload = {
         email: email, 
         first_name: first_name, 
         last_name: last_name, 
-        list_id: parseInt(list_id), // Send the list ID back in the body
+        
+        // CRITICAL FIX: The list IDs must be sent in an array named 'lists'
+        "lists": [parseInt(list_id)], 
         
         // CRITICAL FIX: Explicitly set the status to 'subscribed'
         "status": "subscribed", 
@@ -79,7 +80,7 @@ export async function POST(request) {
         if (response.ok) { 
             return new Response(JSON.stringify({ 
                 success: true, 
-                message: 'Contact added/updated. Please verify confirmation status.',
+                message: 'Contact created and assigned to list successfully!',
                 sendfox_data: data 
             }), { 
                 status: 200, 
