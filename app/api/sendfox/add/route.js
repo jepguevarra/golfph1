@@ -1,12 +1,12 @@
-// COMPLETE AND CORRECTED CODE for golfph1/app/api/sendfox/add/route.js
+// FULL, REVISED CODE for app/api/sendfox/add/route.js
 
 const SENDFOX_API_BASE = 'https://api.sendfox.com';
 const API_TOKEN = process.env.SENDFOX_API_TOKEN;
 
 export async function POST(request) {
-    
-    // --- START: Missing Payload Reading & Validation ---
     let payload;
+
+    // --- 1. INITIAL CHECKS & PAYLOAD READING ---
     try {
         // Check for missing API Token configuration (Server-side check)
         if (!API_TOKEN) {
@@ -16,14 +16,18 @@ export async function POST(request) {
             });
         }
         
-        // CRITICAL STEP: Read the request body as JSON
+        // CRITICAL: Read the request body as JSON. This MUST be the first line
+        // to handle the body inside the try block.
         payload = await request.json(); 
     } catch (e) {
-        // Return 400 if the body is missing or unreadable (the cause of your "payload is not defined" error)
+        // Return 400 if the body is missing or unreadable (e.g., missing Content-Type)
         return new Response(JSON.stringify({ 
             error: "Invalid Request Body", 
-            detail: "Failed to parse JSON. Ensure Content-Type is application/json and body is not empty." 
-        }), { status: 400 });
+            detail: "Failed to parse JSON. Ensure Content-Type is application/json and body is correctly formatted." 
+        }), { 
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+        });
     }
 
     // Deconstruct and validate required fields
@@ -33,55 +37,70 @@ export async function POST(request) {
         return new Response(JSON.stringify({ 
             error: "Missing required fields", 
             detail: "The request must contain 'email' and 'list_id'." 
-        }), { status: 400 });
+        }), { 
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+        });
     }
     
-    // You can also perform additional data cleaning/preparation here if needed
-    
-    // --- END: Missing Payload Reading & Validation ---
+    // --- 2. SEND FOX API CALL PREPARATION ---
     
     const endpoint = `${SENDFOX_API_BASE}/contacts`;
 
+    // Prepare the final payload including the skip_confirmation flag
+    const sendfoxPayload = {
+        email: email, 
+        first_name: first_name, 
+        last_name: last_name, 
+        list_id: parseInt(list_id), // Ensure list_id is an integer for SendFox
+        "skip_confirmation": true, // Skips the double opt-in email
+    };
+
+
     try {
-        // The fetch call now correctly uses the defined 'payload' variable
         const response = await fetch(endpoint, {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${API_TOKEN}`,
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify(payload),
+            body: JSON.stringify(sendfoxPayload),
         });
 
+        // Read the response data (this is the SendFox response body)
         const data = await response.json();
 
-        // 1. Check for ANY successful status code (200-299)
+        // --- 3. RESPONSE HANDLING ---
+
+        // Check for ANY successful status code (response.ok = 200-299)
         if (response.ok) { 
             return new Response(JSON.stringify({ 
                 success: true, 
-                message: 'Contact successfully added or updated in SendFox.',
+                message: 'Contact successfully added and confirmed in SendFox.',
                 contact_id: data.id,
-                sendfox_data: data 
+                sendfox_data: data // Optional: returns the full SendFox contact object
             }), { 
-                status: 200, 
+                status: 200, // Return 200 OK for Odoo/Client success
                 headers: { 'Content-Type': 'application/json' },
             });
         } 
         
-        // 2. Handle failure status codes (4xx or 5xx)
+        // Handle failure status codes (4xx or 5xx)
         else {
+            // Log the detailed error from SendFox
             console.error(`SendFox API error (${response.status}):`, data);
             return new Response(JSON.stringify({ 
                 error: `Failed to add contact to SendFox (Status: ${response.status})`, 
-                detail: data 
+                detail: data // Return the detailed SendFox error body
             }), { 
-                status: response.status, 
+                status: response.status, // Return the actual SendFox error status
                 headers: { 'Content-Type': 'application/json' },
             });
         }
 
     } catch (error) {
-        // ... (Network/Internal Server Error handling) ...
+        // Catch network errors, DNS failure, etc.
+        console.error('Network or unexpected internal error:', error);
         return new Response(JSON.stringify({ 
             error: 'Internal Server Error (Fetch/Network Failure)', 
             detail: error.message 
@@ -90,4 +109,4 @@ export async function POST(request) {
             headers: { 'Content-Type': 'application/json' },
         });
     }
-};
+}
