@@ -1,26 +1,24 @@
-// NEW CODE for app/api/sendfox/bulk_move/route.js
+// IMPROVED CODE for app/api/sendfox/move/route.js (Handles existing list membership)
 
 const SENDFOX_API_BASE = 'https://api.sendfox.com';
 const API_TOKEN = process.env.SENDFOX_API_TOKEN;
 
-// --- HARDCODED LIST IDs ---
 const SOURCE_LIST_ID = 616366; 
 const DESTINATION_LIST_ID = 616404; 
-// --------------------------
 
 export async function POST(request) {
-    
     if (!API_TOKEN) {
         return new Response(JSON.stringify({ error: 'Server configuration error: Missing API Token.' }), { status: 500 });
     }
 
     let allContacts = [];
-    let nextUrl = `${SENDFOX_API_BASE}/lists/${SOURCE_LIST_ID}/contacts`; // Start with the first page
+    let nextUrl = `${SENDFOX_API_BASE}/lists/${SOURCE_LIST_ID}/contacts`; 
 
-    // --- 1. FETCH ALL CONTACTS FROM SOURCE LIST (Handles Pagination) ---
+    // --- 1. FETCH CONTACT IDs FROM SOURCE LIST (Same as before) ---
+    // ... (This section remains unchanged, fetches contact IDs) ...
+
     try {
         while (nextUrl) {
-            console.log(`Fetching contacts from URL: ${nextUrl}`);
             const response = await fetch(nextUrl, {
                 method: 'GET',
                 headers: { 'Authorization': `Bearer ${API_TOKEN}` },
@@ -37,17 +35,9 @@ export async function POST(request) {
             const data = await response.json();
             allContacts = allContacts.concat(data.data || []); 
             
-            // Check for next page URL (SendFox uses 'next' in its links property)
             nextUrl = data.links ? (data.links.next || null) : null;
-            
-            // **Vercel Timeout Guardrail:** If you hit your limit here, the process stops.
-            if (allContacts.length > 500 && nextUrl) { 
-                 console.warn("Stopping fetch after 500 contacts to avoid Vercel timeout.");
-                 nextUrl = null; 
-            }
         }
     } catch (error) {
-        console.error('Bulk Fetch Error:', error);
         return new Response(JSON.stringify({ 
             error: 'Failed during contact list fetching.', 
             detail: error.message 
@@ -61,17 +51,24 @@ export async function POST(request) {
         }), { status: 200 });
     }
 
-    // --- 2. LOOP AND UPDATE EACH CONTACT (PUT Request) ---
+    // --- 2. LOOP and SMART UPDATE EACH CONTACT ---
     const updateResults = [];
     let successCount = 0;
 
     for (const contact of allContacts) {
         try {
+            // Get the IDs of the lists the contact is *currently* on
+            const currentListIds = contact.lists.map(list => list.id);
+            
+            // Create a Set to ensure list IDs are unique and include the new one
+            const newListsSet = new Set(currentListIds);
+            newListsSet.add(DESTINATION_LIST_ID); // Add the new destination list
+
             const updateEndpoint = `${SENDFOX_API_BASE}/contacts/${contact.id}`;
             
-            // The PUT payload requires the NEW list ID(s)
+            // CRITICAL FIX: Send ALL list IDs (current + new destination)
             const updatePayload = {
-                "lists": [DESTINATION_LIST_ID], 
+                "lists": Array.from(newListsSet), 
                 "status": "subscribed" 
             };
 
