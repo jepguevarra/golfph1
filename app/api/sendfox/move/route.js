@@ -1,13 +1,11 @@
-// FINAL CODE: app/api/sendfox/move/route.js
-// Bulk migrates ALL contacts from SOURCE_LIST_ID (616366) to DESTINATION_LIST_ID (616404) (copy/add)
+// THE FINAL AND CORRECT LOGIC: app/api/sendfox/move/route.js
+// Uses the List Membership Endpoint to bypass the 405 error on the Contact Update endpoint.
 
 const SENDFOX_API_BASE = 'https://api.sendfox.com';
 const API_TOKEN = process.env.SENDFOX_API_TOKEN;
 
-// --- HARDCODED LIST IDs ---
 const SOURCE_LIST_ID = 616366; 
 const DESTINATION_LIST_ID = 616404; 
-// --------------------------
 
 export async function POST(request) {
     
@@ -34,10 +32,7 @@ export async function POST(request) {
                 return new Response(JSON.stringify({ 
                     error: `Failed to fetch contacts from source list (Status: ${response.status})`,
                     detail: errorData 
-                }), { 
-                    status: response.status,
-                    headers: { 'Content-Type': 'application/json' },
-                });
+                }), { status: response.status });
             }
 
             const data = await response.json();
@@ -48,72 +43,59 @@ export async function POST(request) {
         return new Response(JSON.stringify({ 
             error: 'Failed during contact list fetching.', 
             detail: error.message 
-        }), { 
-            status: 500,
-            headers: { 'Content-Type': 'application/json' },
-        });
+        }), { status: 500 });
     }
 
     if (allContacts.length === 0) {
         return new Response(JSON.stringify({ 
             success: true, 
             message: 'No contacts found in the source list to migrate.' 
-        }), { 
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-        });
+        }), { status: 200 });
     }
 
-    // --- 2. LOOP and SMART UPDATE EACH CONTACT (PATCH) ---
+    // --- 2. LOOP and ADD EACH CONTACT TO THE DESTINATION LIST (POST to List Endpoint) ---
     const updateResults = [];
     let successCount = 0;
 
     for (const contact of allContacts) {
         try {
-            // CRITICAL FIX: Safely access contact.lists to prevent the "Cannot read properties of undefined" error
-            const currentListIds = (contact.lists ?? []).map(list => list.id);
+            // CRITICAL FIX: Use the specific List Membership Endpoint
+            const listEndpoint = `${SENDFOX_API_BASE}/lists/${DESTINATION_LIST_ID}/contacts`;
             
-            const newListsSet = new Set(currentListIds);
-            newListsSet.add(DESTINATION_LIST_ID); 
-
-            const updateEndpoint = `${SENDFOX_API_BASE}/contacts/${contact.id}`;
-            
-            const updatePayload = {
-                "lists": Array.from(newListsSet), 
-                "status": "subscribed" 
+            // The payload only needs the contact ID to add it to the list
+            const listAddPayload = {
+                "id": contact.id, 
             };
 
-            const updateResponse = await fetch(updateEndpoint, {
-                // *** THE FINAL ATTEMPT FIX: Using PATCH method ***
-                method: 'PATCH', 
+            const listAddResponse = await fetch(listEndpoint, {
+                method: 'POST', 
                 headers: {
                     'Authorization': `Bearer ${API_TOKEN}`,
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify(updatePayload),
+                body: JSON.stringify(listAddPayload),
             });
 
-            if (updateResponse.ok) {
+            if (listAddResponse.ok) {
                 successCount++;
             } else {
                 let errorDetail = {};
-                // Robust Error Handling for 405/HTML errors
-                const contentType = updateResponse.headers.get('content-type');
+                const contentType = listAddResponse.headers.get('content-type');
                 if (contentType && contentType.includes('application/json')) {
-                    errorDetail = await updateResponse.json();
+                    errorDetail = await listAddResponse.json();
                 } else {
-                    const rawError = await updateResponse.text();
+                    const rawError = await listAddResponse.text();
                     errorDetail = { 
-                        error_type: "Non-JSON Auth/HTML Error",
-                        http_status: updateResponse.status,
+                        error_type: "List Add Failure",
+                        http_status: listAddResponse.status,
                         raw_response_start: rawError.substring(0, 100) + '...' 
                     };
                 }
 
-                updateResults.push({ id: contact.id, status: updateResponse.status, error: errorDetail });
+                updateResults.push({ id: contact.id, status: listAddResponse.status, error: errorDetail });
             }
         } catch (error) {
-            updateResults.push({ id: contact.id, error: error.message || 'Network failure during update.' });
+            updateResults.push({ id: contact.id, error: error.message || 'Network failure during list addition.' });
         }
     }
 
@@ -123,8 +105,5 @@ export async function POST(request) {
         message: `Bulk migration complete. ${successCount} contacts successfully added to list ${DESTINATION_LIST_ID}.`,
         failures: updateResults,
         total_processed: allContacts.length
-    }), { 
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-    });
+    }), { status: 200 });
 }
