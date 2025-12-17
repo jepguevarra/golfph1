@@ -1,5 +1,5 @@
 // FINAL WORKING CODE for app/api/sendfox/move/route.js
-// Bulk migrates ALL contacts from SOURCE_LIST_ID to DESTINATION_LIST_ID (copy/add)
+// Bulk migrates ALL contacts from SOURCE_LIST_ID (616366) to DESTINATION_LIST_ID (616404) (copy/add)
 
 const SENDFOX_API_BASE = 'https://api.sendfox.com';
 const API_TOKEN = process.env.SENDFOX_API_TOKEN;
@@ -21,7 +21,7 @@ export async function POST(request) {
     let allContacts = [];
     let nextUrl = `${SENDFOX_API_BASE}/lists/${SOURCE_LIST_ID}/contacts`; 
 
-    // --- 1. FETCH CONTACTS FROM SOURCE LIST (Handles Pagination) ---
+    // --- 1. FETCH CONTACTS FROM SOURCE LIST (GET) ---
     try {
         while (nextUrl) {
             const response = await fetch(nextUrl, {
@@ -42,11 +42,9 @@ export async function POST(request) {
 
             const data = await response.json();
             allContacts = allContacts.concat(data.data || []); 
-            
             nextUrl = data.links ? (data.links.next || null) : null;
         }
     } catch (error) {
-        console.error('Bulk Fetch Error:', error);
         return new Response(JSON.stringify({ 
             error: 'Failed during contact list fetching.', 
             detail: error.message 
@@ -66,16 +64,15 @@ export async function POST(request) {
         });
     }
 
-    // --- 2. LOOP and SMART UPDATE EACH CONTACT (Using POST method) ---
+    // --- 2. LOOP and SMART UPDATE EACH CONTACT (POST) ---
     const updateResults = [];
     let successCount = 0;
 
     for (const contact of allContacts) {
         try {
-            // CRITICAL FIX: Safely access contact.lists. If it's undefined, use an empty array.
+            // Safely access contact.lists. If it's undefined, use an empty array.
             const currentListIds = (contact.lists ?? []).map(list => list.id);
             
-            // Use Set to ensure unique IDs and include the new destination list
             const newListsSet = new Set(currentListIds);
             newListsSet.add(DESTINATION_LIST_ID); 
 
@@ -87,7 +84,7 @@ export async function POST(request) {
             };
 
             const updateResponse = await fetch(updateEndpoint, {
-                // Using POST for updating a contact by ID (to avoid 405 error)
+                // Using POST for updating a contact by ID
                 method: 'POST', 
                 headers: {
                     'Authorization': `Bearer ${API_TOKEN}`,
@@ -99,11 +96,24 @@ export async function POST(request) {
             if (updateResponse.ok) {
                 successCount++;
             } else {
-                const errorDetail = await updateResponse.json();
+                let errorDetail = {};
+                // FINAL FIX: Safely parse response (catches the HTML error page)
+                const contentType = updateResponse.headers.get('content-type');
+                if (contentType && contentType.includes('application/json')) {
+                    errorDetail = await updateResponse.json();
+                } else {
+                    const rawError = await updateResponse.text();
+                    errorDetail = { 
+                        error_type: "Non-JSON Auth/HTML Error",
+                        http_status: updateResponse.status,
+                        // Provide the start of the HTML page for debugging
+                        raw_response_start: rawError.substring(0, 100) + '...' 
+                    };
+                }
+
                 updateResults.push({ id: contact.id, status: updateResponse.status, error: errorDetail });
             }
         } catch (error) {
-            console.error(`Error updating contact ${contact.id}:`, error);
             updateResults.push({ id: contact.id, error: error.message || 'Network failure during update.' });
         }
     }
