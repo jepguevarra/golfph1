@@ -1,13 +1,11 @@
-// FINAL CODE for app/api/sendfox/move/route.js
+// FINAL WORKING CODE for app/api/sendfox/move/route.js
 // Bulk migrates ALL contacts from SOURCE_LIST_ID to DESTINATION_LIST_ID (copy/add)
 
 const SENDFOX_API_BASE = 'https://api.sendfox.com';
 const API_TOKEN = process.env.SENDFOX_API_TOKEN;
 
 // --- HARDCODED LIST IDs ---
-// Contacts will be copied from here
 const SOURCE_LIST_ID = 616366; 
-// Contacts will be added to here
 const DESTINATION_LIST_ID = 616404; 
 // --------------------------
 
@@ -43,10 +41,8 @@ export async function POST(request) {
             }
 
             const data = await response.json();
-            // Assuming SendFox returns contact data in a 'data' property
             allContacts = allContacts.concat(data.data || []); 
             
-            // Check for next page URL (assuming SendFox uses 'links.next')
             nextUrl = data.links ? (data.links.next || null) : null;
         }
     } catch (error) {
@@ -76,8 +72,8 @@ export async function POST(request) {
 
     for (const contact of allContacts) {
         try {
-            // Get the IDs of the lists the contact is *currently* on
-            const currentListIds = contact.lists.map(list => list.id);
+            // CRITICAL FIX: Safely access contact.lists. If it's undefined, use an empty array.
+            const currentListIds = (contact.lists ?? []).map(list => list.id);
             
             // Use Set to ensure unique IDs and include the new destination list
             const newListsSet = new Set(currentListIds);
@@ -85,14 +81,13 @@ export async function POST(request) {
 
             const updateEndpoint = `${SENDFOX_API_BASE}/contacts/${contact.id}`;
             
-            // CRITICAL: Send ALL list IDs (current + new destination) to ensure list membership is added, not overwritten
             const updatePayload = {
                 "lists": Array.from(newListsSet), 
                 "status": "subscribed" 
             };
 
             const updateResponse = await fetch(updateEndpoint, {
-                // CRITICAL FIX: Use POST for updating a contact by ID (to avoid 405 error)
+                // Using POST for updating a contact by ID (to avoid 405 error)
                 method: 'POST', 
                 headers: {
                     'Authorization': `Bearer ${API_TOKEN}`,
@@ -108,7 +103,6 @@ export async function POST(request) {
                 updateResults.push({ id: contact.id, status: updateResponse.status, error: errorDetail });
             }
         } catch (error) {
-            // Log full error object for better debugging than "Network failure"
             console.error(`Error updating contact ${contact.id}:`, error);
             updateResults.push({ id: contact.id, error: error.message || 'Network failure during update.' });
         }
