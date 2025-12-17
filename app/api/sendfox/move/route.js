@@ -1,4 +1,4 @@
-// FINAL WORKING CODE for app/api/sendfox/move/route.js
+// FINAL CODE: app/api/sendfox/move/route.js
 // Bulk migrates ALL contacts from SOURCE_LIST_ID (616366) to DESTINATION_LIST_ID (616404) (copy/add)
 
 const SENDFOX_API_BASE = 'https://api.sendfox.com';
@@ -64,13 +64,13 @@ export async function POST(request) {
         });
     }
 
-    // --- 2. LOOP and SMART UPDATE EACH CONTACT (POST) ---
+    // --- 2. LOOP and SMART UPDATE EACH CONTACT (PATCH) ---
     const updateResults = [];
     let successCount = 0;
 
     for (const contact of allContacts) {
         try {
-            // Safely access contact.lists. If it's undefined, use an empty array.
+            // CRITICAL FIX: Safely access contact.lists to prevent the "Cannot read properties of undefined" error
             const currentListIds = (contact.lists ?? []).map(list => list.id);
             
             const newListsSet = new Set(currentListIds);
@@ -84,8 +84,8 @@ export async function POST(request) {
             };
 
             const updateResponse = await fetch(updateEndpoint, {
-                // Using POST for updating a contact by ID
-                method: 'POST', 
+                // *** THE FINAL ATTEMPT FIX: Using PATCH method ***
+                method: 'PATCH', 
                 headers: {
                     'Authorization': `Bearer ${API_TOKEN}`,
                     'Content-Type': 'application/json',
@@ -97,7 +97,7 @@ export async function POST(request) {
                 successCount++;
             } else {
                 let errorDetail = {};
-                // FINAL FIX: Safely parse response (catches the HTML error page)
+                // Robust Error Handling for 405/HTML errors
                 const contentType = updateResponse.headers.get('content-type');
                 if (contentType && contentType.includes('application/json')) {
                     errorDetail = await updateResponse.json();
@@ -106,7 +106,6 @@ export async function POST(request) {
                     errorDetail = { 
                         error_type: "Non-JSON Auth/HTML Error",
                         http_status: updateResponse.status,
-                        // Provide the start of the HTML page for debugging
                         raw_response_start: rawError.substring(0, 100) + '...' 
                     };
                 }
