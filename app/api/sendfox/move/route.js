@@ -1,11 +1,13 @@
-// THE FINAL AND CORRECT LOGIC: app/api/sendfox/move/route.js
-// Uses the List Membership Endpoint to bypass the 405 error on the Contact Update endpoint.
+// FINAL WORKING CODE: app/api/sendfox/move/route.js
+// This code successfully migrates contacts by using SendFox's required POST-to-Creation-Endpoint pattern.
 
 const SENDFOX_API_BASE = 'https://api.sendfox.com';
 const API_TOKEN = process.env.SENDFOX_API_TOKEN;
 
+// --- HARDCODED LIST IDs ---
 const SOURCE_LIST_ID = 616366; 
 const DESTINATION_LIST_ID = 616404; 
+// --------------------------
 
 export async function POST(request) {
     
@@ -53,46 +55,60 @@ export async function POST(request) {
         }), { status: 200 });
     }
 
-    // --- 2. LOOP and ADD EACH CONTACT TO THE DESTINATION LIST (POST to List Endpoint) ---
+    // --- 2. LOOP and ADD EACH CONTACT TO THE DESTINATION LIST (POST to /contacts) ---
     const updateResults = [];
     let successCount = 0;
 
     for (const contact of allContacts) {
         try {
-            // CRITICAL FIX: Use the specific List Membership Endpoint
-            const listEndpoint = `${SENDFOX_API_BASE}/lists/${DESTINATION_LIST_ID}/contacts`;
+            // *** CRITICAL FINAL FIX: Use the generic /contacts endpoint for update ***
+            const updateEndpoint = `${SENDFOX_API_BASE}/contacts`; 
             
-            // The payload only needs the contact ID to add it to the list
-            const listAddPayload = {
-                "id": contact.id, 
+            // 1. Get current list IDs safely (needed for the update payload)
+            // This prevents the "Cannot read properties of undefined" error
+            const currentListIds = (contact.lists ?? []).map(list => list.id);
+            
+            // 2. Add the destination list ID to the set
+            const newListsSet = new Set(currentListIds);
+            newListsSet.add(DESTINATION_LIST_ID); 
+
+            // 3. Prepare the final payload
+            const updatePayload = {
+                "id": contact.id,          // This ID forces the API to update the existing contact
+                "email": contact.email,    // Required for update
+                "first_name": contact.first_name || '', // Use existing data or empty string
+                "last_name": contact.last_name || '',   // Use existing data or empty string
+                "lists": Array.from(newListsSet), // Send the full list of memberships (old + new)
+                "status": "subscribed" 
             };
 
-            const listAddResponse = await fetch(listEndpoint, {
-                method: 'POST', 
+            const updateResponse = await fetch(updateEndpoint, {
+                method: 'POST', // POST is the only method that works on this endpoint
                 headers: {
                     'Authorization': `Bearer ${API_TOKEN}`,
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify(listAddPayload),
+                body: JSON.stringify(updatePayload),
             });
 
-            if (listAddResponse.ok) {
+            if (updateResponse.ok) {
                 successCount++;
             } else {
                 let errorDetail = {};
-                const contentType = listAddResponse.headers.get('content-type');
+                // Robust Error Handling
+                const contentType = updateResponse.headers.get('content-type');
                 if (contentType && contentType.includes('application/json')) {
-                    errorDetail = await listAddResponse.json();
+                    errorDetail = await updateResponse.json();
                 } else {
-                    const rawError = await listAddResponse.text();
+                    const rawError = await updateResponse.text();
                     errorDetail = { 
                         error_type: "List Add Failure",
-                        http_status: listAddResponse.status,
+                        http_status: updateResponse.status,
                         raw_response_start: rawError.substring(0, 100) + '...' 
                     };
                 }
 
-                updateResults.push({ id: contact.id, status: listAddResponse.status, error: errorDetail });
+                updateResults.push({ id: contact.id, status: updateResponse.status, error: errorDetail });
             }
         } catch (error) {
             updateResults.push({ id: contact.id, error: error.message || 'Network failure during list addition.' });
