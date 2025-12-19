@@ -2,7 +2,7 @@ const SENDFOX_API_BASE = 'https://api.sendfox.com';
 const API_TOKEN = process.env.SENDFOX_API_TOKEN;
 
 const SOURCE_LIST_ID = 616366; 
-const DESTINATION_LIST_ID = 616404; 
+const DESTINATION_LIST_ID = 616988; 
 
 export async function POST(request) {
     if (!API_TOKEN) return new Response(JSON.stringify({ error: 'Missing API Token' }), { status: 500 });
